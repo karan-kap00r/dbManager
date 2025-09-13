@@ -275,7 +275,6 @@ def apply(
         # Store the original YAML structure with enhanced metadata for proper rollback
         rollback_payload = []
         for action in enhanced_actions:
-            print(action, "---action: ", action.payload)
             # Reconstruct the original YAML structure with enhanced metadata
             if action.type == "drop_column":
                 rollback_payload.append({
@@ -296,7 +295,8 @@ def apply(
             elif action.type == "drop_table":
                 rollback_payload.append({
                     "drop_table": {
-                        "table": action.payload["table"]
+                        "table": action.payload["table"],
+                        "meta": action.payload.get("meta", {})
                     }
                 })
             elif action.type == "rename_table":
@@ -647,7 +647,39 @@ def autogenerate(
             )
     for table in existing_tables:
         if table not in target_tables and table not in INTERNAL_TABLES:
-            diffs.append({"drop_table": {"table": table}})
+            print("table: ", table)
+            try:
+                # Capture table metadata from existing database before dropping
+                columns = inspector.get_columns(table)
+                indexes = inspector.get_indexes(table)
+                
+                # Enhance column metadata for better rollback
+                enhanced_columns = []
+                for col in columns:
+                    enhanced_col = {
+                        "name": col["name"],
+                        "type": str(col["type"]),
+                        "nullable": col.get("nullable", True),
+                        "primary_key": col.get("primary_key", False),
+                        "unique": col.get("unique", False),
+                        "default": str(col.get("default")) if col.get("default") is not None else None,
+                    }
+                    enhanced_columns.append(enhanced_col)
+                
+                diffs.append({
+                    "drop_table": {
+                        "table": table,
+                        "meta": {
+                            "columns": enhanced_columns,
+                            "indexes": indexes,
+                        }
+                    }
+                })
+                print(f"📋 Captured metadata for {table}: {len(enhanced_columns)} columns, {len(indexes)} indexes")
+            except Exception as e:
+                print(f"⚠️ Failed to capture metadata for {table}: {e}")
+                # Fallback to basic drop_table without metadata
+                diffs.append({"drop_table": {"table": table}})
 
     # Columns
     for table in target_tables:
@@ -729,7 +761,21 @@ def autogenerate(
         # Dropped indexes
         for idx in existing_indexes:
             if idx not in target_indexes:
-                diffs.append({"drop_index": {"table": table, "name": idx}})
+                try:
+                    # Capture index metadata from existing database before dropping
+                    index_info = existing_indexes[idx]
+                    diffs.append({
+                        "drop_index": {
+                            "table": table,
+                            "name": idx,
+                            "meta": index_info
+                        }
+                    })
+                    print(f"📋 Captured metadata for index {idx} on {table}")
+                except Exception as e:
+                    print(f"⚠️ Failed to capture metadata for index {idx} on {table}: {e}")
+                    # Fallback to basic drop_index without metadata
+                    diffs.append({"drop_index": {"table": table, "name": idx}})
 
     if not diffs:
         print("✅ No changes detected. Database is up-to-date.")

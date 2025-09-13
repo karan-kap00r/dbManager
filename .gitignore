@@ -141,31 +141,11 @@ dmypy.json
 migration_state.json
 migration_lock.txt
 
-# IDE and editor files
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+# IDE and editor files (moved to bottom for better organization)
 
 # Logs
 *.log
 logs/
-
-# Temporary files
-*.tmp
-*.temp
-temp/
-tmp/
 
 # Backup files
 *.bak
@@ -184,10 +164,9 @@ secrets.yml
 *.pfx
 
 # Migration specific ignores
-# Ignore any generated migration files that shouldn't be committed
-migrations/*
-migrations/*.pyc
+# Ignore temporary migration state files (but keep actual migration files)
 migrations/__pycache__/
+migrations/*.pyc
 
 # Test databases
 test_*.db
@@ -207,6 +186,63 @@ coverage.xml
 .prof
 
 
+# Package-specific configuration files (may contain sensitive data)
+*_config.json
 migrate_config.json
-examples/*
-utils/constants.py
+dbporter_config.json
+
+# Temporary files and state
+*.tmp
+*.temp
+temp/
+tmp/
+
+# PyPI packaging specific
+*.egg-info/
+.egg-info/
+.python-version
+.python-version.*
+
+# Pre-commit hooks
+.pre-commit-config.yaml
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# VS Code settings
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# PyCharm
+.idea/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

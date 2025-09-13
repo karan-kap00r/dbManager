@@ -44,7 +44,7 @@ def install_database_driver(database):
     return True
 
 def main():
-    parser = argparse.ArgumentParser(description="Install Database Migration Tool")
+    parser = argparse.ArgumentParser(description="Install dbPorter - Database Migration Tool")
     parser.add_argument(
         "--database", 
         choices=["sqlite", "postgresql", "mysql", "sqlserver", "oracle"],
@@ -64,7 +64,7 @@ def main():
     
     args = parser.parse_args()
     
-    print("🚀 Database Migration Tool - Installation")
+    print("🚀 dbPorter - Database Migration Tool - Installation")
     print("=" * 50)
     print(f"Target database: {args.database}")
     print(f"Installation type: {'minimal' if args.minimal else 'development' if args.dev else 'full'}")
@@ -100,13 +100,13 @@ def main():
     print()
     print("Next steps:")
     print("1. Set up your database configuration:")
-    print("   python main.py init-db")
+    print("   dbporter init-db")
     print()
     print("2. Create your first migration:")
-    print("   python main.py autogenerate -m 'Initial schema'")
+    print("   dbporter autogenerate -m 'Initial schema'")
     print()
     print("3. Apply the migration:")
-    print("   python main.py apply")
+    print("   dbporter apply")
     print()
     print("For more information, see the README.md file.")
 

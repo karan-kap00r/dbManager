@@ -1,4 +1,4 @@
-# Database Migration Tool
+# dbPorter - Database Migration Tool
 
 A powerful, flexible database migration tool built with Python that supports both YAML-based declarative migrations and Python-based programmatic migrations. This tool provides comprehensive schema management capabilities with automatic rollback support and metadata preservation.
 
@@ -34,7 +34,7 @@ A powerful, flexible database migration tool built with Python that supports bot
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
-   cd migrateDB
+   cd dbPorter
    ```
 
 2. **Install dependencies**
@@ -100,7 +100,7 @@ A powerful, flexible database migration tool built with Python that supports bot
 ## 🏗️ Project Structure
 
 ```
-migrateDB/
+dbPorter/
 ├── main.py                 # Entry point
 ├── commands.py             # CLI commands implementation
 ├── models.py              # SQLAlchemy metadata definitions
@@ -614,14 +614,14 @@ For organizations that prefer not to store database credentials in files, you ca
 
 ```python
 # In your application code
-from migrateDB import set_database_url
+from dbPorter import set_database_url
 
 # Set database URL directly in code
 set_database_url("postgresql://user:password@localhost:5432/mydatabase")
 
 # Now all migration commands will use this URL automatically
-# python main.py status
-# python main.py apply migrations/20250101_add_users.yml
+# dbporter status
+# dbporter apply migrations/20250101_add_users.yml
 ```
 
 **Benefits:**
@@ -634,7 +634,7 @@ set_database_url("postgresql://user:password@localhost:5432/mydatabase")
 **Example with environment variables:**
 ```python
 import os
-from migrateDB import set_database_url
+from dbPorter import set_database_url
 
 # From environment variable
 db_url = os.getenv("DATABASE_URL")
@@ -650,24 +650,24 @@ The tool uses the following priority order for database configuration:
 
 1. **Command-line arguments** (highest priority)
    ```bash
-   python main.py status --db "postgresql://user:pass@host:port/db"
+   dbporter status --db "postgresql://user:pass@host:port/db"
    ```
 
 2. **Programmatic configuration** (security-conscious)
    ```python
-   from migrateDB import set_database_url
+   from dbPorter import set_database_url
    set_database_url("postgresql://user:pass@host:port/db")
    ```
 
 3. **Saved configuration** (traditional)
    ```bash
-   python main.py init-db --host localhost --user myuser --password mypass
+   dbporter init-db --host localhost --user myuser --password mypass
    ```
 
 4. **Environment variables** (fallback)
    ```bash
    export DB_URL="postgresql://user:pass@host:port/db"
-   python main.py status
+   dbporter status
    ```
 
 5. **Auto-discovery** (lowest priority)

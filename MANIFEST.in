@@ -1,0 +1,44 @@
+# Include documentation
+include README.md
+include LICENSE
+include CHANGELOG.md
+
+# Include requirements files
+include requirements*.txt
+
+# Include examples
+recursive-include examples *.py
+
+# Include configuration files
+include pyproject.toml
+include setup.py
+
+# Include installation script
+include install.py
+
+# Exclude development files
+exclude .gitignore
+exclude .github/*
+exclude tests/*
+exclude docs/*
+exclude .pytest_cache/*
+exclude .mypy_cache/*
+exclude .coverage
+exclude htmlcov/*
+
+# Exclude build artifacts
+exclude build/*
+exclude dist/*
+exclude *.egg-info/*
+exclude __pycache__/*
+exclude *.pyc
+exclude *.pyo
+exclude *.pyd
+exclude .Python
+exclude .env
+exclude .venv/*
+exclude venv/*
+exclude .tox/*
+exclude .coverage
+exclude .pytest_cache/*
+exclude .mypy_cache/*

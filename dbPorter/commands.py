@@ -12,16 +12,16 @@ from sqlalchemy.engine import Engine
 from collections import defaultdict, deque
 import uuid
 # Dynamic models import - will be loaded at runtime
-from src.planner import plan_migration
-from src.db import get_engine, init_metadata, MIGRATION_LOG_TABLE
-from src.applier import apply_migration
-from utils.utils import resolve_latest_migration
-from src.migration_loader import (
+from .planner import plan_migration
+from .db import get_engine, init_metadata, MIGRATION_LOG_TABLE
+from .applier import apply_migration
+from .utils.utils import resolve_latest_migration
+from .migration_loader import (
     load_migration_from_file,
     load_python_migration,
     load_rename_registry
 )
-from utils.constants import _CONFIG_FILE, _INTERNAL_TABLES
+from .utils.constants import _CONFIG_FILE, _INTERNAL_TABLES
 
 load_dotenv()
 app = typer.Typer()

@@ -1,5 +1,5 @@
 from typing import List, Dict, Any
-from src.migration_loader import Migration
+from .migration_loader import Migration
 
 def plan_migration(migration: Migration, rename_registry: Dict[str, str]) -> List[Dict[str, Any]]:
     planned = []

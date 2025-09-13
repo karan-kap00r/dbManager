@@ -1,8 +1,9 @@
 import os
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String, Text
 from sqlalchemy.engine import Engine
+from utils.constants import _MIGRATION_LOG_TABLE
 
-MIGRATION_LOG_TABLE = "migration_log"
+MIGRATION_LOG_TABLE = _MIGRATION_LOG_TABLE
 
 def get_engine(db_url: str) -> Engine:
     return create_engine(db_url, future=True)

@@ -1,0 +1,46 @@
+# Database Migration Tool - Requirements
+# =====================================
+# 
+# Core dependencies for the database migration tool
+# Supports SQLite, PostgreSQL, MySQL, and other SQLAlchemy-compatible databases
+
+# Core Framework
+typer>=0.9.0                    # CLI framework for building command-line interfaces
+sqlalchemy>=2.0.0               # SQL toolkit and ORM for database operations
+
+# Data Processing
+pyyaml>=6.0                     # YAML parser for migration file processing
+python-dotenv>=1.0.0            # Environment variable management
+
+# Display & Formatting
+tabulate>=0.9.0                 # Pretty-print tabular data for status reports
+
+# Type Hints (Python < 3.9 compatibility)
+typing-extensions>=4.0.0        # Backport of typing features for older Python versions
+
+# Optional Database Drivers
+# Uncomment the drivers you need for your specific database:
+
+# PostgreSQL
+# psycopg2-binary>=2.9.0        # PostgreSQL adapter for Python
+
+# MySQL
+# PyMySQL>=1.0.0                # Pure Python MySQL client
+# mysqlclient>=2.1.0            # MySQL database connector (requires MySQL development headers)
+
+# SQLite (included with Python)
+# No additional driver needed
+
+# Microsoft SQL Server
+# pyodbc>=4.0.0                 # ODBC database connector
+# pymssql>=2.2.0                # Microsoft SQL Server connector
+
+# Oracle
+# cx-Oracle>=8.0.0              # Oracle database connector
+
+# Development Dependencies (optional)
+# pytest>=7.0.0                 # Testing framework
+# pytest-cov>=4.0.0             # Coverage plugin for pytest
+# black>=23.0.0                 # Code formatter
+# flake8>=6.0.0                 # Linting tool
+# mypy>=1.0.0                   # Static type checker

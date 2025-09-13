@@ -21,12 +21,43 @@ from src.migration_loader import (
     load_python_migration,
     load_rename_registry
 )
+from utils.constants import _CONFIG_FILE, _INTERNAL_TABLES
 
 load_dotenv()
 app = typer.Typer()
 
 # Configuration file path
-CONFIG_FILE = "migrate_config.json"
+CONFIG_FILE = _CONFIG_FILE
+
+# Global configuration store for programmatic access
+_global_config = {}
+
+def set_database_url(db_url: str):
+    """
+    Set database URL programmatically for security-conscious organizations.
+    
+    This allows users to set the database URL directly in their code after importing
+    the migration tool, avoiding the need to store credentials in config files.
+    
+    Args:
+        db_url: Database connection URL (e.g., "postgresql://user:pass@host:port/db")
+        
+    Example:
+        from migrateDB import set_database_url
+        set_database_url("postgresql://user:pass@localhost:5432/mydb")
+    """
+    global _global_config
+    _global_config["db_url"] = db_url
+    print(f"🔐 Database URL set programmatically (not saved to file)")
+
+def get_database_url() -> Optional[str]:
+    """
+    Get the programmatically set database URL.
+    
+    Returns:
+        Database URL if set programmatically, None otherwise
+    """
+    return _global_config.get("db_url")
 
 
 def save_database_config(
@@ -93,12 +124,12 @@ def get_database_config(
     database: Optional[str] = None,
     db_type: Optional[str] = None
 ) -> tuple[str, dict]:
-    """Get database configuration with priority: command args > saved config > discovery.
+    """Get database configuration with priority: command args > programmatic > saved config > discovery.
     
     Returns:
         Tuple of (database_url, config_dict).
     """
-    # If any command-line arguments provided, use them
+    # Priority 1: Command line arguments
     if any([db, host, user, database]):
         if db:
             return db, {"db_url": db}
@@ -119,13 +150,19 @@ def get_database_config(
             "db_type": final_db_type
         }
     
-    # Try to load saved configuration
+    # Priority 2: Programmatically set URL (security-conscious approach)
+    programmatic_url = get_database_url()
+    if programmatic_url:
+        print(f"🔐 Using programmatically set database URL")
+        return programmatic_url, {"db_url": programmatic_url, "source": "programmatic"}
+    
+    # Priority 3: Saved configuration
     saved_config = load_database_config()
     if saved_config and saved_config.get("db_url"):
         print(f"📁 Using saved database configuration from {CONFIG_FILE}")
         return saved_config["db_url"], saved_config
     
-    # Fall back to discovery
+    # Priority 4: Fall back to discovery
     db_url = discover_database_url()
     return db_url, {"db_url": db_url}
 
@@ -1400,7 +1437,7 @@ def autogenerate(
 
     existing_tables = inspector.get_table_names()
     target_tables = list(target_metadata.tables.keys())
-    INTERNAL_TABLES = {MIGRATION_LOG_TABLE}
+    INTERNAL_TABLES = _INTERNAL_TABLES
 
     # Tables
     for table in target_tables:

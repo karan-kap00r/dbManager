@@ -208,3 +208,5 @@ coverage.xml
 
 
 migrate_config.json
+examples/*
+utils/constants.py

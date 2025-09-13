@@ -20,11 +20,14 @@ A powerful, flexible database migration tool built with Python that supports bot
 
 ## 📋 Prerequisites
 
-- Python 3.8+
-- SQLAlchemy
-- PyYAML
-- Typer
-- python-dotenv
+- **Python 3.8+** (Python 3.9+ recommended)
+- **Core Dependencies**: SQLAlchemy, PyYAML, Typer, python-dotenv, tabulate
+- **Database Driver**: Choose based on your database:
+  - **SQLite**: No additional driver needed (included with Python)
+  - **PostgreSQL**: `psycopg2-binary` or `psycopg2`
+  - **MySQL**: `PyMySQL` or `mysqlclient`
+  - **SQL Server**: `pyodbc` or `pymssql`
+  - **Oracle**: `cx-Oracle`
 
 ## 🛠️ Installation
 
@@ -35,6 +38,35 @@ A powerful, flexible database migration tool built with Python that supports bot
    ```
 
 2. **Install dependencies**
+   
+   **Option A: Automated installation (recommended)**
+   ```bash
+   # For SQLite (default)
+   python install.py
+   
+   # For PostgreSQL
+   python install.py --database postgresql
+   
+   # For MySQL
+   python install.py --database mysql
+   
+   # For development
+   python install.py --dev
+   ```
+   
+   **Option B: Manual installation**
+   ```bash
+   # Full installation (recommended)
+   pip install -r requirements.txt
+   
+   # Minimal installation (SQLite only)
+   pip install -r requirements-minimal.txt
+   
+   # Development installation
+   pip install -r requirements-dev.txt
+   ```
+   
+   **Option C: Quick installation**
    ```bash
    pip install sqlalchemy pyyaml typer python-dotenv tabulate
    ```
@@ -575,6 +607,73 @@ def downgrade(engine):
 - **Schema Validation**: Compare current schema with target schema
 
 ## ⚙️ Configuration
+
+### 🔐 Programmatic Configuration (Security-Conscious)
+
+For organizations that prefer not to store database credentials in files, you can set the database URL programmatically:
+
+```python
+# In your application code
+from migrateDB import set_database_url
+
+# Set database URL directly in code
+set_database_url("postgresql://user:password@localhost:5432/mydatabase")
+
+# Now all migration commands will use this URL automatically
+# python main.py status
+# python main.py apply migrations/20250101_add_users.yml
+```
+
+**Benefits:**
+- ✅ **No credential files**: Database URL not stored on disk
+- ✅ **Environment variables**: Can use `os.getenv("DATABASE_URL")`
+- ✅ **Application integration**: Works with existing app configuration
+- ✅ **CI/CD friendly**: Perfect for automated deployments
+- ✅ **Multi-tenant ready**: Dynamic database URLs per tenant
+
+**Example with environment variables:**
+```python
+import os
+from migrateDB import set_database_url
+
+# From environment variable
+db_url = os.getenv("DATABASE_URL")
+if db_url:
+    set_database_url(db_url)
+else:
+    raise ValueError("DATABASE_URL environment variable not set")
+```
+
+### 🔄 Configuration Priority
+
+The tool uses the following priority order for database configuration:
+
+1. **Command-line arguments** (highest priority)
+   ```bash
+   python main.py status --db "postgresql://user:pass@host:port/db"
+   ```
+
+2. **Programmatic configuration** (security-conscious)
+   ```python
+   from migrateDB import set_database_url
+   set_database_url("postgresql://user:pass@host:port/db")
+   ```
+
+3. **Saved configuration** (traditional)
+   ```bash
+   python main.py init-db --host localhost --user myuser --password mypass
+   ```
+
+4. **Environment variables** (fallback)
+   ```bash
+   export DB_URL="postgresql://user:pass@host:port/db"
+   python main.py status
+   ```
+
+5. **Auto-discovery** (lowest priority)
+   - Automatically detects database from common patterns
+
+### 📁 File-Based Configuration (Traditional)
 
 ### Environment Variables
 

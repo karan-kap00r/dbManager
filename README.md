@@ -34,13 +34,31 @@ A powerful, flexible database migration tool built with Python that supports bot
    pip install sqlalchemy pyyaml typer python-dotenv tabulate
    ```
 
-3. **Set up environment variables**
-   Create a `.env` file in the project root:
-   ```env
-   DB_URL=sqlite:///your_database.db
+3. **Set up database configuration (optional)**
+   The tool auto-discovers database URLs from multiple sources:
+   
+   **Option A: Environment Variables**
+   ```bash
+   export DB_URL="sqlite:///your_database.db"
    # or for PostgreSQL: postgresql://user:password@localhost/dbname
    # or for MySQL: mysql://user:password@localhost/dbname
    ```
+   
+   **Option B: .env file**
+   Create a `.env` file in the project root:
+   ```env
+   DB_URL=sqlite:///your_database.db
+   DATABASE_URL=postgresql://user:password@localhost/dbname
+   ```
+   
+   **Option C: Configuration files**
+   The tool also looks for database URLs in:
+   - `config.py` (DATABASE_URL variable)
+   - `settings.py` (DB_URL variable)
+   - `database.py` (database_url variable)
+   
+   **Option D: Default fallback**
+   If no database URL is found, defaults to `sqlite:///migrate.db`
 
 ## 🏗️ Project Structure
 
@@ -69,8 +87,9 @@ migrateDB/
    python main.py init-db
    ```
 
-2. **Define your schema in `models.py`**
+2. **Define your schema in a models file**
    ```python
+   # models.py, schema.py, database.py, or any Python file
    from sqlalchemy import Table, Column, Integer, String, MetaData
    
    metadata = MetaData()
@@ -166,6 +185,72 @@ python main.py revision MIGRATION_FILE
 python main.py revision my_migration.yml
 # Creates: migrations/20250101120000_my_migration.yml
 ```
+
+### Models Discovery
+
+```bash
+# Discover and validate models files
+python main.py discover-models [--models-file PATH]
+
+# Examples:
+python main.py discover-models                    # Auto-discover models file
+python main.py discover-models --models-file "my_schema.py"
+```
+
+### Database Discovery
+
+```bash
+# Discover and validate database configuration
+python main.py discover-db [--db URL]
+
+# Examples:
+python main.py discover-db                        # Auto-discover database URL
+python main.py discover-db --db "postgresql://user:pass@localhost/db"
+```
+
+### One-Time Database Configuration
+
+**Configure once, use everywhere!** Set up your database connection once during `init-db`, and all future commands will automatically use the same configuration.
+
+#### **Step 1: Configure Database (One Time Only)**
+```bash
+# PostgreSQL (most common)
+python main.py init-db --host localhost --port 5432 --user myuser --password mypass --database mydb --type postgresql
+
+# MySQL
+python main.py init-db --host localhost --port 3306 --user myuser --password mypass --database mydb --type mysql
+
+# SQLite (no credentials needed)
+python main.py init-db --database myapp.db --type sqlite
+
+# Using complete URL
+python main.py init-db --db "postgresql://user:pass@localhost/db"
+```
+
+#### **Step 2: Use Commands Without Database Parameters**
+```bash
+# All these commands automatically use the saved configuration!
+python main.py apply
+python main.py rollback
+python main.py autogenerate -m "Add new table"
+python main.py plan
+```
+
+#### **Configuration Management**
+```bash
+# Show current configuration
+python main.py show-config
+
+# Reset configuration (go back to auto-discovery)
+python main.py reset-config
+```
+
+**Benefits:**
+- ✅ **Configure Once**: Set database connection once during `init-db`
+- ✅ **Use Everywhere**: All commands automatically use saved configuration
+- ✅ **Override When Needed**: Can still override with command-line arguments
+- ✅ **Secure**: Credentials stored in local config file (not in code)
+- ✅ **Flexible**: Easy to change configuration anytime
 
 ## 📝 Migration File Formats
 

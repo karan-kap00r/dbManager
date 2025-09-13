@@ -8,7 +8,7 @@ from typing import Optional
 from pathlib import Path
 from tabulate import tabulate
 from sqlalchemy import inspect, text, MetaData
-from models import metadata
+# Dynamic models import - will be loaded at runtime
 from src.planner import plan_migration
 from src.db import get_engine, init_metadata, MIGRATION_LOG_TABLE
 from src.applier import apply_migration
@@ -21,33 +21,419 @@ from src.migration_loader import (
 
 load_dotenv()
 app = typer.Typer()
-DB_URL = os.getenv("DB_URL")
+
+# Configuration file path
+CONFIG_FILE = "migrate_config.json"
+
+
+def save_database_config(
+    db_url: Optional[str] = None,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    user: Optional[str] = None,
+    password: Optional[str] = None,
+    database: Optional[str] = None,
+    db_type: str = "sqlite"
+) -> None:
+    """Save database configuration to file for future use.
+    
+    Args:
+        db_url: Complete database URL.
+        host: Database host.
+        port: Database port.
+        user: Database username.
+        password: Database password.
+        database: Database name.
+        db_type: Database type.
+    """
+    config = {
+        "db_url": db_url,
+        "host": host,
+        "port": port,
+        "user": user,
+        "password": password,
+        "database": database,
+        "db_type": db_type,
+        "saved_at": datetime.datetime.utcnow().isoformat()
+    }
+    
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump(config, f, indent=2)
+    
+    print(f"💾 Database configuration saved to {CONFIG_FILE}")
+
+
+def load_database_config() -> Optional[dict]:
+    """Load database configuration from file.
+    
+    Returns:
+        Database configuration dict or None if not found.
+    """
+    if not os.path.exists(CONFIG_FILE):
+        return None
+    
+    try:
+        with open(CONFIG_FILE, 'r') as f:
+            config = json.load(f)
+        return config
+    except Exception as e:
+        print(f"⚠️ Could not load configuration from {CONFIG_FILE}: {e}")
+        return None
+
+
+def get_database_config(
+    db: Optional[str] = None,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    user: Optional[str] = None,
+    password: Optional[str] = None,
+    database: Optional[str] = None,
+    db_type: Optional[str] = None
+) -> tuple[str, dict]:
+    """Get database configuration with priority: command args > saved config > discovery.
+    
+    Returns:
+        Tuple of (database_url, config_dict).
+    """
+    # If any command-line arguments provided, use them
+    if any([db, host, user, database]):
+        if db:
+            return db, {"db_url": db}
+        
+        # Build from components
+        final_db_type = db_type or "sqlite"
+        db_url = build_database_url(
+            db_url=db, host=host, port=port, user=user,
+            password=password, database=database, db_type=final_db_type
+        )
+        return db_url, {
+            "db_url": db_url,
+            "host": host,
+            "port": port,
+            "user": user,
+            "password": password,
+            "database": database,
+            "db_type": final_db_type
+        }
+    
+    # Try to load saved configuration
+    saved_config = load_database_config()
+    if saved_config and saved_config.get("db_url"):
+        print(f"📁 Using saved database configuration from {CONFIG_FILE}")
+        return saved_config["db_url"], saved_config
+    
+    # Fall back to discovery
+    db_url = discover_database_url()
+    return db_url, {"db_url": db_url}
+
+
+def discover_database_url(db_url: Optional[str] = None) -> str:
+    """Discover and validate the database URL.
+    
+    Args:
+        db_url: Optional database URL. If None, auto-discovers.
+        
+    Returns:
+        Database connection URL.
+        
+    Raises:
+        ValueError: If no database URL is found or invalid.
+    """
+    if db_url:
+        return db_url
+    
+    # Try environment variables first
+    env_url = os.getenv("DB_URL")
+    if env_url:
+        return env_url
+    
+    # Try common environment variable names
+    common_env_vars = [
+        "DATABASE_URL",
+        "DB_CONNECTION_STRING", 
+        "DATABASE_CONNECTION_STRING",
+        "SQLALCHEMY_DATABASE_URI",
+        "POSTGRES_URL",
+        "MYSQL_URL",
+        "SQLITE_URL"
+    ]
+    
+    for env_var in common_env_vars:
+        url = os.getenv(env_var)
+        if url:
+            print(f"📁 Using database URL from {env_var}")
+            return url
+    
+    # Try to find database configuration files
+    config_files = [
+        ".env",
+        "config.py",
+        "settings.py", 
+        "database.py",
+        "db_config.py"
+    ]
+    
+    for config_file in config_files:
+        if os.path.exists(config_file):
+            try:
+                if config_file.endswith('.py'):
+                    # Try to load Python config file
+                    import importlib.util
+                    spec = importlib.util.spec_from_file_location("config", config_file)
+                    config = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(config)
+                    
+                    # Look for common database URL attributes
+                    for attr in ['DATABASE_URL', 'DB_URL', 'database_url', 'db_url']:
+                        if hasattr(config, attr):
+                            url = getattr(config, attr)
+                            if url:
+                                print(f"📁 Using database URL from {config_file}")
+                                return url
+                else:
+                    # Try to parse .env file manually
+                    with open(config_file, 'r') as f:
+                        for line in f:
+                            if line.strip().startswith('DB_URL=') or line.strip().startswith('DATABASE_URL='):
+                                url = line.split('=', 1)[1].strip().strip('"\'')
+                                if url:
+                                    print(f"📁 Using database URL from {config_file}")
+                                    return url
+            except Exception as e:
+                print(f"⚠️ Could not load {config_file}: {e}")
+                continue
+    
+    # Default fallback
+    default_url = "sqlite:///migrate.db"
+    print(f"⚠️ No database URL found, using default: {default_url}")
+    print("💡 Set DB_URL environment variable or use --db option to specify database")
+    return default_url
+
+
+def build_database_url(
+    db_url: Optional[str] = None,
+    host: Optional[str] = None,
+    port: Optional[int] = None,
+    user: Optional[str] = None,
+    password: Optional[str] = None,
+    database: Optional[str] = None,
+    db_type: str = "sqlite"
+) -> str:
+    """Build database URL from individual components or use provided URL.
+    
+    Args:
+        db_url: Complete database URL (takes precedence if provided).
+        host: Database host.
+        port: Database port.
+        user: Database username.
+        password: Database password.
+        database: Database name.
+        db_type: Database type (sqlite, postgresql, mysql).
+        
+    Returns:
+        Complete database connection URL.
+    """
+    if db_url:
+        return db_url
+    
+    if db_type == "sqlite":
+        if database:
+            return f"sqlite:///{database}"
+        return "sqlite:///migrate.db"
+    
+    elif db_type == "postgresql":
+        if not all([host, user, database]):
+            raise ValueError("PostgreSQL requires --host, --user, and --database")
+        
+        password_part = f":{password}" if password else ""
+        port_part = f":{port}" if port else ""
+        return f"postgresql://{user}{password_part}@{host}{port_part}/{database}"
+    
+    elif db_type == "mysql":
+        if not all([host, user, database]):
+            raise ValueError("MySQL requires --host, --user, and --database")
+        
+        password_part = f":{password}" if password else ""
+        port_part = f":{port}" if port else ":3306"
+        return f"mysql://{user}{password_part}@{host}{port_part}/{database}"
+    
+    else:
+        raise ValueError(f"Unsupported database type: {db_type}")
+
+
+def validate_database_url(db_url: str) -> bool:
+    """Validate that the database URL is properly formatted.
+    
+    Args:
+        db_url: Database connection URL to validate.
+        
+    Returns:
+        True if URL is valid, False otherwise.
+    """
+    try:
+        from sqlalchemy import create_engine
+        # Try to create engine to validate URL
+        engine = create_engine(db_url, future=True)
+        # Test connection
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True
+    except Exception as e:
+        print(f"❌ Invalid database URL: {e}")
+        return False
+
+
+def discover_models_file(models_file: Optional[str] = None) -> str:
+    """Discover and validate the models file.
+    
+    Args:
+        models_file: Optional path to models file. If None, auto-discovers.
+        
+    Returns:
+        Path to the models file.
+        
+    Raises:
+        FileNotFoundError: If no models file is found.
+        ImportError: If models file cannot be imported or lacks metadata.
+    """
+    if models_file:
+        if not os.path.exists(models_file):
+            raise FileNotFoundError(f"Models file not found: {models_file}")
+        return models_file
+    
+    # Auto-discovery: look for common models file names
+    possible_names = [
+        "models.py",
+        "schema.py", 
+        "database.py",
+        "db_models.py",
+        "tables.py",
+        "models/schema.py",
+        "app/models.py",
+        "src/models.py"
+    ]
+    
+    for name in possible_names:
+        if os.path.exists(name):
+            return name
+    
+    raise FileNotFoundError(
+        "No models file found. Tried: " + ", ".join(possible_names) + 
+        "\nUse --models-file to specify the path to your models file."
+    )
+
+
+def load_models_metadata(models_file: str) -> MetaData:
+    """Load metadata from the models file.
+    
+    Args:
+        models_file: Path to the models file.
+        
+    Returns:
+        SQLAlchemy MetaData object.
+        
+    Raises:
+        ImportError: If the file cannot be imported or lacks metadata.
+    """
+    try:
+        # Add current directory to Python path
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(models_file)))
+        
+        # Import the module
+        module_name = os.path.splitext(os.path.basename(models_file))[0]
+        module = __import__(module_name)
+        
+        # Look for metadata attribute
+        if hasattr(module, 'metadata'):
+            return module.metadata
+        elif hasattr(module, 'MetaData'):
+            return module.MetaData
+        else:
+            raise ImportError(f"No 'metadata' or 'MetaData' found in {models_file}")
+            
+    except Exception as e:
+        raise ImportError(f"Failed to load models from {models_file}: {e}")
 
 
 # ---------------------------
 #  INIT DB
 # ---------------------------
 @app.command("init-db")
-def init_db_command(db: str = typer.Option(DB_URL)):
+def init_db_command(
+    db: Optional[str] = typer.Option(None, "--db", help="Database connection URL (auto-discovered if not provided)"),
+    host: Optional[str] = typer.Option(None, "--host", help="Database host (e.g., localhost)"),
+    port: Optional[int] = typer.Option(None, "--port", help="Database port (e.g., 5432 for PostgreSQL)"),
+    user: Optional[str] = typer.Option(None, "--user", help="Database username"),
+    password: Optional[str] = typer.Option(None, "--password", help="Database password"),
+    database: Optional[str] = typer.Option(None, "--database", help="Database name"),
+    db_type: Optional[str] = typer.Option("sqlite", "--type", help="Database type: sqlite, postgresql, mysql"),
+):
     """Initialize the migration metadata table in the database.
     
     This command creates the migration_log table required for tracking applied
     migrations. The table stores migration version, description, timestamp, and
     payload information for rollback purposes.
     
+    Database connection options:
+    1. Use --db for complete URL: --db "postgresql://user:pass@localhost/db"
+    2. Use individual components: --host localhost --user myuser --database mydb --type postgresql
+    3. Auto-discovery from environment/config files
+    
     Args:
-        db: Database connection URL. Defaults to DB_URL environment variable.
+        db: Complete database connection URL (takes precedence).
+        host: Database host (e.g., localhost).
+        port: Database port (e.g., 5432 for PostgreSQL).
+        user: Database username.
+        password: Database password.
+        database: Database name.
+        db_type: Database type (sqlite, postgresql, mysql).
         
     Raises:
         Exception: If database connection fails or table creation fails.
         
     Example:
+        # Using complete URL
+        $ python main.py init-db --db "postgresql://user:pass@localhost/mydb"
+        
+        # Using individual components (more secure)
+        $ python main.py init-db --host localhost --user myuser --password mypass --database mydb --type postgresql
+        
+        # SQLite (default)
+        $ python main.py init-db --database myapp.db
+        
+        # Auto-discovery
         $ python main.py init-db
-        $ python main.py init-db --db "sqlite:///mydb.db"
     """
-    engine = get_engine(db)
+    try:
+        # Get database configuration
+        db_url, config = get_database_config(
+            db=db, host=host, port=port, user=user,
+            password=password, database=database, db_type=db_type
+        )
+        
+        if not validate_database_url(db_url):
+            raise ValueError(f"Invalid database URL: {db_url}")
+        
+        # Save configuration for future use
+        save_database_config(
+            db_url=config.get("db_url"),
+            host=config.get("host"),
+            port=config.get("port"),
+            user=config.get("user"),
+            password=config.get("password"),
+            database=config.get("database"),
+            db_type=config.get("db_type", "sqlite")
+        )
+            
+        engine = get_engine(db_url)
+    except Exception as e:
+        print(f"❌ Database configuration error: {e}")
+        print("💡 Use --help to see all database connection options")
+        raise
     init_metadata(engine)
     print("✅ Migration metadata initialized.")
+    print("💾 Database configuration saved - future commands will use these settings automatically!")
 
 
 # ---------------------------
@@ -138,7 +524,13 @@ def plan(path: Optional[str] = None, rename_map: str = typer.Option("rename_map.
 @app.command()
 def apply(
     path: Optional[str] = None,
-    db: str = typer.Option(DB_URL),
+    db: Optional[str] = typer.Option(None, "--db", help="Database connection URL (auto-discovered if not provided)"),
+    host: Optional[str] = typer.Option(None, "--host", help="Database host (e.g., localhost)"),
+    port: Optional[int] = typer.Option(None, "--port", help="Database port (e.g., 5432 for PostgreSQL)"),
+    user: Optional[str] = typer.Option(None, "--user", help="Database username"),
+    password: Optional[str] = typer.Option(None, "--password", help="Database password"),
+    database: Optional[str] = typer.Option(None, "--database", help="Database name"),
+    db_type: Optional[str] = typer.Option("sqlite", "--type", help="Database type: sqlite, postgresql, mysql"),
     rename_map: str = typer.Option("rename_map.yml"),
     dry_run: bool = typer.Option(False, "--dry-run"),
     latest: bool = typer.Option(False, "--latest"),
@@ -184,7 +576,21 @@ def apply(
         path = resolve_latest_migration()
         print(f"📂 Using latest migration: {path}")
 
-    engine = get_engine(db)
+    try:
+        # Get database configuration (uses saved config if no args provided)
+        db_url, config = get_database_config(
+            db=db, host=host, port=port, user=user,
+            password=password, database=database, db_type=db_type
+        )
+        
+        if not validate_database_url(db_url):
+            raise ValueError(f"Invalid database URL: {db_url}")
+            
+        engine = get_engine(db_url)
+    except Exception as e:
+        print(f"❌ Database configuration error: {e}")
+        print("💡 Run 'python main.py init-db' first to configure database connection")
+        raise
     init_metadata(engine)
 
     # -----------------------------
@@ -394,7 +800,15 @@ def apply(
 #  ROLLBACK
 # ---------------------------
 @app.command()
-def rollback(db: str = typer.Option(DB_URL)):
+def rollback(
+    db: Optional[str] = typer.Option(None, "--db", help="Database connection URL (uses saved config if not provided)"),
+    host: Optional[str] = typer.Option(None, "--host", help="Database host (overrides saved config)"),
+    port: Optional[int] = typer.Option(None, "--port", help="Database port (overrides saved config)"),
+    user: Optional[str] = typer.Option(None, "--user", help="Database username (overrides saved config)"),
+    password: Optional[str] = typer.Option(None, "--password", help="Database password (overrides saved config)"),
+    database: Optional[str] = typer.Option(None, "--database", help="Database name (overrides saved config)"),
+    db_type: Optional[str] = typer.Option(None, "--type", help="Database type (overrides saved config)"),
+):
     """Rollback the last applied migration.
     
     This command reverses the most recently applied migration by:
@@ -422,7 +836,21 @@ def rollback(db: str = typer.Option(DB_URL)):
         $ python main.py rollback
         $ python main.py rollback --db "sqlite:///mydb.db"
     """
-    engine = get_engine(db)
+    try:
+        # Get database configuration (uses saved config if no args provided)
+        db_url, config = get_database_config(
+            db=db, host=host, port=port, user=user,
+            password=password, database=database, db_type=db_type
+        )
+        
+        if not validate_database_url(db_url):
+            raise ValueError(f"Invalid database URL: {db_url}")
+            
+        engine = get_engine(db_url)
+    except Exception as e:
+        print(f"❌ Database configuration error: {e}")
+        print("💡 Run 'python main.py init-db' first to configure database connection")
+        raise
 
     with engine.connect() as conn:
         rows = conn.execute(
@@ -587,14 +1015,24 @@ def rollback(db: str = typer.Option(DB_URL)):
 # ---------------------------
 @app.command()
 def autogenerate(
-    db: str = typer.Option(DB_URL),
+    db: Optional[str] = typer.Option(None, "--db", help="Database connection URL (uses saved config if not provided)"),
+    host: Optional[str] = typer.Option(None, "--host", help="Database host (overrides saved config)"),
+    port: Optional[int] = typer.Option(None, "--port", help="Database port (overrides saved config)"),
+    user: Optional[str] = typer.Option(None, "--user", help="Database username (overrides saved config)"),
+    password: Optional[str] = typer.Option(None, "--password", help="Database password (overrides saved config)"),
+    database: Optional[str] = typer.Option(None, "--database", help="Database name (overrides saved config)"),
+    db_type: Optional[str] = typer.Option(None, "--type", help="Database type (overrides saved config)"),
     message: str = typer.Option("auto migration", "-m", "--message"),
+    models_file: Optional[str] = typer.Option(None, "--models-file", help="Path to models file (auto-discovered if not provided)"),
 ):
-    """Auto-generate migration by comparing database schema with models.py metadata.
+    """Auto-generate migration by comparing database schema with models metadata.
     
     This command analyzes the current database schema and compares it against
-    the target schema defined in models.py to automatically generate a migration
+    the target schema defined in your models file to automatically generate a migration
     file containing the necessary changes.
+    
+    The command auto-discovers models files with common names like:
+    models.py, schema.py, database.py, db_models.py, tables.py
     
     The command detects and generates operations for:
     - Table additions and removals
@@ -607,18 +1045,40 @@ def autogenerate(
     Args:
         db: Database connection URL. Defaults to DB_URL environment variable.
         message: Description for the generated migration. Defaults to "auto migration".
+        models_file: Path to models file. Auto-discovered if not provided.
         
     Raises:
+        FileNotFoundError: If no models file is found.
+        ImportError: If models file cannot be imported or lacks metadata.
         Exception: If database connection fails or schema inspection fails.
         
     Example:
         $ python main.py autogenerate
         $ python main.py autogenerate -m "Add user profile table"
+        $ python main.py autogenerate --models-file "my_schema.py"
         $ python main.py autogenerate --db "sqlite:///mydb.db" -m "Update schema"
     """
-    engine = get_engine(db)
+    # Discover and load models file
+    models_path = discover_models_file(models_file)
+    print(f"📁 Using models file: {models_path}")
+    
+    try:
+        # Get database configuration (uses saved config if no args provided)
+        db_url, config = get_database_config(
+            db=db, host=host, port=port, user=user,
+            password=password, database=database, db_type=db_type
+        )
+        
+        if not validate_database_url(db_url):
+            raise ValueError(f"Invalid database URL: {db_url}")
+            
+        engine = get_engine(db_url)
+    except Exception as e:
+        print(f"❌ Database configuration error: {e}")
+        print("💡 Run 'python main.py init-db' first to configure database connection")
+        raise
     inspector = inspect(engine)
-    target_metadata: MetaData = metadata
+    target_metadata: MetaData = load_models_metadata(models_path)
     diffs = []
 
     existing_tables = inspector.get_table_names()
@@ -794,3 +1254,169 @@ def autogenerate(
         )
 
     print(f"📦 New migration written: {filename}")
+
+
+# ---------------------------
+#  DISCOVER MODELS
+# ---------------------------
+@app.command("discover-models")
+def discover_models(
+    models_file: Optional[str] = typer.Option(None, "--models-file", help="Path to models file (auto-discovered if not provided)"),
+):
+    """Discover and validate models files in your project.
+    
+    This command helps you find and validate your models files, showing
+    which files contain SQLAlchemy metadata that can be used for migrations.
+    
+    Args:
+        models_file: Path to models file. Auto-discovered if not provided.
+        
+    Example:
+        $ python main.py discover-models
+        $ python main.py discover-models --models-file "my_schema.py"
+    """
+    try:
+        models_path = discover_models_file(models_file)
+        print(f"✅ Found models file: {models_path}")
+        
+        # Validate the models file
+        metadata = load_models_metadata(models_path)
+        table_count = len(metadata.tables)
+        
+        print(f"📊 Models file contains {table_count} tables:")
+        for table_name in metadata.tables.keys():
+            table = metadata.tables[table_name]
+            column_count = len(table.columns)
+            index_count = len(table.indexes)
+            print(f"  - {table_name}: {column_count} columns, {index_count} indexes")
+            
+        print(f"\n✅ Models file is valid and ready for migrations!")
+        
+    except FileNotFoundError as e:
+        print(f"❌ {e}")
+        print("\n💡 Common solutions:")
+        print("  1. Create a models.py file with your SQLAlchemy metadata")
+        print("  2. Use --models-file to specify the path to your models file")
+        print("  3. Rename your schema file to one of: models.py, schema.py, database.py")
+        
+    except ImportError as e:
+        print(f"❌ {e}")
+        print("\n💡 Make sure your models file contains:")
+        print("  - A 'metadata' variable with SQLAlchemy MetaData")
+        print("  - Table definitions using SQLAlchemy")
+        print("  - Example: metadata = MetaData()")
+
+
+# ---------------------------
+#  DISCOVER DATABASE
+# ---------------------------
+@app.command("discover-db")
+def discover_database(
+    db: Optional[str] = typer.Option(None, "--db", help="Database connection URL (auto-discovered if not provided)"),
+):
+    """Discover and validate database configuration.
+    
+    This command helps you find and validate your database configuration,
+    showing which database URL will be used for migrations.
+    
+    Args:
+        db: Database connection URL. Auto-discovered if not provided.
+        
+    Example:
+        $ python main.py discover-db
+        $ python main.py discover-db --db "postgresql://user:pass@localhost/db"
+    """
+    try:
+        db_url = discover_database_url(db)
+        print(f"✅ Found database URL: {db_url}")
+        
+        # Validate the database URL
+        if validate_database_url(db_url):
+            print("✅ Database URL is valid and connection successful!")
+            
+            # Test basic database operations
+            engine = get_engine(db_url)
+            with engine.connect() as conn:
+                # Get database info
+                result = conn.execute(text("SELECT 1 as test"))
+                test_value = result.fetchone()[0]
+                print(f"📊 Database connection test: {test_value}")
+                
+                # Try to get table count (if migration_log exists)
+                try:
+                    result = conn.execute(text("SELECT COUNT(*) FROM migration_log"))
+                    migration_count = result.fetchone()[0]
+                    print(f"📋 Migration log contains {migration_count} entries")
+                except Exception:
+                    print("📋 Migration log not yet initialized (run 'python main.py init-db')")
+                    
+        else:
+            print("❌ Database URL is invalid or connection failed")
+            
+    except Exception as e:
+        print(f"❌ Database discovery failed: {e}")
+        print("\n💡 Common solutions:")
+        print("  1. Set DB_URL environment variable")
+        print("  2. Create a .env file with DATABASE_URL=...")
+        print("  3. Use --db option to specify database URL")
+        print("  4. Check that your database server is running")
+
+
+# ---------------------------
+#  SHOW CONFIG
+# ---------------------------
+@app.command("show-config")
+def show_config():
+    """Show current database configuration.
+    
+    This command displays the saved database configuration that will be used
+    for all migration commands.
+    
+    Example:
+        $ python main.py show-config
+    """
+    config = load_database_config()
+    if not config:
+        print("❌ No database configuration found.")
+        print("💡 Run 'python main.py init-db' first to configure database connection")
+        return
+    
+    print("📋 Current Database Configuration:")
+    print(f"  Database URL: {config.get('db_url', 'Not set')}")
+    print(f"  Host: {config.get('host', 'Not set')}")
+    print(f"  Port: {config.get('port', 'Not set')}")
+    print(f"  User: {config.get('user', 'Not set')}")
+    print(f"  Database: {config.get('database', 'Not set')}")
+    print(f"  Type: {config.get('db_type', 'Not set')}")
+    print(f"  Saved at: {config.get('saved_at', 'Unknown')}")
+    
+    # Test the configuration
+    try:
+        db_url = config.get('db_url')
+        if db_url and validate_database_url(db_url):
+            print("✅ Configuration is valid and database is accessible")
+        else:
+            print("❌ Configuration is invalid or database is not accessible")
+    except Exception as e:
+        print(f"❌ Error testing configuration: {e}")
+
+
+# ---------------------------
+#  RESET CONFIG
+# ---------------------------
+@app.command("reset-config")
+def reset_config():
+    """Reset database configuration.
+    
+    This command removes the saved database configuration file,
+    forcing the tool to use auto-discovery or command-line arguments.
+    
+    Example:
+        $ python main.py reset-config
+    """
+    if os.path.exists(CONFIG_FILE):
+        os.remove(CONFIG_FILE)
+        print(f"🗑️  Removed configuration file: {CONFIG_FILE}")
+        print("💡 Database configuration reset - tool will use auto-discovery for future commands")
+    else:
+        print("ℹ️  No configuration file found - nothing to reset")

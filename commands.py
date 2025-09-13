@@ -1985,7 +1985,7 @@ def merge_branches(
         print(f"❌ Error merging branches: {e}")
 
 
-@app.command("migration-status")
+@app.command("status")
 def migration_status(
     db: Optional[str] = typer.Option(None, "--db", help="Database connection URL (uses saved config if not provided)"),
     host: Optional[str] = typer.Option(None, "--host", help="Database host (overrides saved config)"),
@@ -1994,17 +1994,253 @@ def migration_status(
     password: Optional[str] = typer.Option(None, "--password", help="Database password (overrides saved config)"),
     database: Optional[str] = typer.Option(None, "--database", help="Database name (overrides saved config)"),
     db_type: Optional[str] = typer.Option(None, "--type", help="Database type (overrides saved config)"),
+    models_file: Optional[str] = typer.Option(None, "--models-file", help="Path to models file for schema validation"),
+    check_sync: bool = typer.Option(True, "--check-sync/--no-check-sync", help="Check if database is in sync with models"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed information"),
 ):
-    """Show detailed migration status and dependency information.
+    """Comprehensive migration and schema status inspection.
     
-    This command provides comprehensive status information:
-    - Applied migrations by branch
-    - Pending migrations
-    - Dependency conflicts
-    - Graph health status
+    This command provides detailed status information including:
+    - ✅ Applied migrations by branch
+    - ⏳ Pending migrations  
+    - ⚠️ Database sync status
+    - 🔍 Schema validation against models
+    - 📊 Dependency health and conflicts
+    - 🎯 Current migration heads
     
     Example:
-        $ python main.py migration-status
+        $ python main.py status
+        $ python main.py status --check-sync --verbose
+        $ python main.py status --models-file custom_models.py
+    """
+    try:
+        # Get database configuration
+        db_url, config = get_database_config(
+            db=db, host=host, port=port, user=user,
+            password=password, database=database, db_type=db_type
+        )
+        
+        engine = get_engine(db_url)
+        graph = load_migration_graph(engine)
+        
+        print("🔍 Migration & Schema Status Report")
+        print("=" * 60)
+        
+        # 1. MIGRATION STATUS
+        print("\n📊 MIGRATION STATUS")
+        print("-" * 30)
+        
+        # Get applied migrations from database
+        applied_migrations = []
+        if graph.nodes:
+            for version, node in graph.nodes.items():
+                if node.applied_at:
+                    applied_migrations.append((version, node))
+        
+        applied_count = len(applied_migrations)
+        
+        # Get pending migrations from filesystem
+        pending_migrations = []
+        pending_files = []
+        
+        # Check for migration files in filesystem
+        migrations_dir = Path("migrations")
+        if migrations_dir.exists():
+            for migration_file in migrations_dir.glob("*.yml"):
+                try:
+                    with open(migration_file, 'r') as f:
+                        migration_data = yaml.safe_load(f)
+                    
+                    version = migration_data.get('version')
+                    if version and version not in graph.nodes:
+                        # This is a pending migration file
+                        pending_files.append({
+                            'version': version,
+                            'description': migration_data.get('description', ''),
+                            'branch': migration_data.get('branch', 'main'),
+                            'dependencies': migration_data.get('dependencies', []),
+                            'file': str(migration_file)
+                        })
+                except Exception as e:
+                    if verbose:
+                        print(f"  ⚠️ Could not read {migration_file}: {e}")
+        
+        pending_count = len(pending_files)
+        
+        print(f"✅ Applied migrations: {applied_count}")
+        print(f"⏳ Pending migrations: {pending_count}")
+            
+        if verbose and applied_migrations:
+            print("\n  Applied migrations:")
+            for version, node in sorted(applied_migrations, key=lambda x: x[0]):
+                deps_str = ", ".join(node.dependencies) if node.dependencies else "none"
+                print(f"    {version}: {node.description}")
+                print(f"      Dependencies: {deps_str}")
+                print(f"      Applied at: {node.applied_at}")
+                print(f"      Branch: {node.branch}")
+        
+        if verbose and pending_files:
+            print("\n  Pending migrations:")
+            for migration in sorted(pending_files, key=lambda x: x['version']):
+                deps_str = ", ".join(migration['dependencies']) if migration['dependencies'] else "none"
+                print(f"    {migration['version']}: {migration['description']}")
+                print(f"      Dependencies: {deps_str}")
+                print(f"      Branch: {migration['branch']}")
+                print(f"      File: {migration['file']}")
+        
+        # 2. DATABASE SYNC STATUS
+        print(f"\n🔄 DATABASE SYNC STATUS")
+        print("-" * 30)
+        
+        sync_status = "✅ In Sync"
+        sync_issues = []
+        
+        if check_sync:
+            try:
+                # Check if there are pending migrations
+                if pending_count > 0:
+                    sync_status = "⚠️ Out of Sync"
+                    sync_issues.append(f"{pending_count} pending migrations")
+                
+                # Check for schema differences if models file provided
+                if models_file or check_sync:
+                    try:
+                        models_path = discover_models_file(models_file)
+                        target_metadata = load_models_metadata(models_path)
+                        inspector = inspect(engine)
+                        
+                        # Get current database tables
+                        existing_tables = set(inspector.get_table_names())
+                        target_tables = set(target_metadata.tables.keys())
+                        
+                        # Check for missing tables
+                        missing_tables = target_tables - existing_tables
+                        extra_tables = existing_tables - target_tables
+                        
+                        if missing_tables:
+                            sync_status = "⚠️ Out of Sync"
+                            sync_issues.append(f"Missing tables: {', '.join(missing_tables)}")
+                        
+                        if extra_tables:
+                            sync_status = "⚠️ Out of Sync"
+                            sync_issues.append(f"Extra tables: {', '.join(extra_tables)}")
+                        
+                        if verbose and (missing_tables or extra_tables):
+                            print(f"  Current DB tables: {len(existing_tables)}")
+                            print(f"  Target tables: {len(target_tables)}")
+                            
+                    except Exception as e:
+                        if verbose:
+                            print(f"  ⚠️ Could not validate against models: {e}")
+                        sync_status = "❓ Unknown"
+                        sync_issues.append("Could not validate against models")
+                
+            except Exception as e:
+                sync_status = "❌ Error"
+                sync_issues.append(f"Sync check failed: {e}")
+        
+        print(f"Status: {sync_status}")
+        if sync_issues:
+            for issue in sync_issues:
+                print(f"  • {issue}")
+        
+        # 3. DEPENDENCY HEALTH
+        print(f"\n🔗 DEPENDENCY HEALTH")
+        print("-" * 30)
+        
+        if graph.nodes:
+            try:
+                sorted_migrations = graph.topological_sort()
+                print("✅ DAG is valid - no cycles detected")
+                
+                if verbose:
+                    print(f"  Dependency order: {' → '.join(sorted_migrations)}")
+                
+                # Check for conflicts
+                conflict_count = 0
+                for version, node in graph.nodes.items():
+                    conflicts = graph.find_conflicts(version, node.dependencies, check_existing=False)
+                    if conflicts:
+                        conflict_count += len(conflicts)
+                        if verbose:
+                            print(f"  ❌ {version}: {', '.join(conflicts)}")
+                
+                if conflict_count == 0:
+                    print("✅ No dependency conflicts")
+                else:
+                    print(f"⚠️ Found {conflict_count} dependency conflicts")
+                    
+            except ValueError as e:
+                print(f"❌ DAG validation failed: {e}")
+        else:
+            print("ℹ️ No migrations to validate")
+        
+        # 4. CURRENT STATE
+        print(f"\n🎯 CURRENT STATE")
+        print("-" * 30)
+        
+        if graph.nodes:
+            heads = graph.get_heads()
+            print(f"Current heads: {', '.join(heads) if heads else 'None'}")
+            
+            # Show branch summary
+            branch_summary = {}
+            for version, node in graph.nodes.items():
+                branch = node.branch
+                if branch not in branch_summary:
+                    branch_summary[branch] = {'applied': 0, 'pending': 0}
+                if node.applied_at:
+                    branch_summary[branch]['applied'] += 1
+                else:
+                    branch_summary[branch]['pending'] += 1
+            
+            if len(branch_summary) > 1 or verbose:
+                print("\nBranch summary:")
+                for branch, counts in branch_summary.items():
+                    print(f"  {branch}: {counts['applied']} applied, {counts['pending']} pending")
+        else:
+            print("No migrations found")
+        
+        # 5. SUMMARY
+        print(f"\n📋 SUMMARY")
+        print("-" * 30)
+        
+        if applied_count == 0 and pending_count == 0:
+            print("🆕 Fresh database - no migrations found")
+        elif pending_count == 0:
+            print("✅ All migrations applied - database is up to date")
+        else:
+            print(f"⚠️ {pending_count} migrations pending - run 'python main.py apply' to apply them")
+        
+        if sync_status.startswith("⚠️"):
+            print("⚠️ Database schema may be out of sync - consider running 'python main.py autogenerate'")
+        elif sync_status == "✅ In Sync":
+            print("✅ Database schema is in sync with migrations")
+            
+    except Exception as e:
+        print(f"❌ Error checking migration status: {e}")
+        if verbose:
+            import traceback
+            traceback.print_exc()
+
+
+@app.command("status-quick")
+def status_quick(
+    db: Optional[str] = typer.Option(None, "--db", help="Database connection URL (uses saved config if not provided)"),
+    host: Optional[str] = typer.Option(None, "--host", help="Database host (overrides saved config)"),
+    port: Optional[int] = typer.Option(None, "--port", help="Database port (overrides saved config)"),
+    user: Optional[str] = typer.Option(None, "--user", help="Database username (overrides saved config)"),
+    password: Optional[str] = typer.Option(None, "--password", help="Database password (overrides saved config)"),
+    database: Optional[str] = typer.Option(None, "--database", help="Database name (overrides saved config)"),
+    db_type: Optional[str] = typer.Option(None, "--type", help="Database type (overrides saved config)"),
+):
+    """Quick migration status overview.
+    
+    Shows a concise summary of migration status without detailed inspection.
+    Perfect for CI/CD pipelines and quick checks.
+    
+    Example:
+        $ python main.py status-quick
     """
     try:
         # Get database configuration
@@ -2020,48 +2256,41 @@ def migration_status(
             print("📭 No migrations found")
             return
         
-        print("📊 Migration Status Report")
-        print("=" * 50)
+        # Count applied vs pending
+        applied_count = sum(1 for node in graph.nodes.values() if node.applied_at)
         
-        # Show branches
-        for branch, versions in graph.branches.items():
-            print(f"\n🌿 Branch: {branch}")
-            print("-" * 20)
-            
-            for version in sorted(versions):
-                node = graph.nodes[version]
-                status = "✅ Applied" if node.applied_at else "⏳ Pending"
-                deps_str = ", ".join(node.dependencies) if node.dependencies else "none"
-                print(f"  {version}: {node.description}")
-                print(f"    Status: {status}")
-                print(f"    Dependencies: {deps_str}")
-                print(f"    Revision: {node.revision_id}")
+        # Check for pending migration files
+        pending_count = 0
+        migrations_dir = Path("migrations")
+        if migrations_dir.exists():
+            for migration_file in migrations_dir.glob("*.yml"):
+                try:
+                    with open(migration_file, 'r') as f:
+                        migration_data = yaml.safe_load(f)
+                    version = migration_data.get('version')
+                    if version and version not in graph.nodes:
+                        pending_count += 1
+                except Exception:
+                    pass
+        
+        # Status indicators
+        if pending_count == 0:
+            print("✅ All migrations applied")
+        else:
+            print(f"⚠️ {pending_count} migrations pending")
+        
+        # Quick sync check
+        try:
+            inspector = inspect(engine)
+            tables = inspector.get_table_names()
+            print(f"📊 Database has {len(tables)} tables")
+        except Exception:
+            print("❓ Could not inspect database")
         
         # Show heads
         heads = graph.get_heads()
-        print(f"\n🎯 Current heads: {', '.join(heads) if heads else 'None'}")
-        
-        # Validate graph
-        try:
-            sorted_migrations = graph.topological_sort()
-            print(f"\n✅ Graph is valid - no cycles detected")
-            print(f"📋 Dependency order: {' -> '.join(sorted_migrations)}")
-        except ValueError as e:
-            print(f"\n❌ Graph validation failed: {e}")
-        
-        # Show conflicts (only check for circular dependencies and missing deps)
-        print(f"\n🔍 Checking for conflicts...")
-        conflict_count = 0
-        for version, node in graph.nodes.items():
-            conflicts = graph.find_conflicts(version, node.dependencies, check_existing=False)
-            if conflicts:
-                conflict_count += len(conflicts)
-                print(f"  ❌ {version}: {', '.join(conflicts)}")
-        
-        if conflict_count == 0:
-            print("✅ No conflicts detected")
-        else:
-            print(f"⚠️  Found {conflict_count} conflicts")
+        if heads:
+            print(f"🎯 Current heads: {', '.join(heads)}")
             
     except Exception as e:
-        print(f"❌ Error checking migration status: {e}")
+        print(f"❌ Error: {e}")

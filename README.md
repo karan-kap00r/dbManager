@@ -15,6 +15,8 @@ A powerful, flexible database migration tool built with Python that supports bot
 - **Multiple Database Support**: Works with any SQLAlchemy-supported database
 - **Parallel Development**: Support for multiple developers working on migrations simultaneously
 - **Conflict Detection**: Automatic detection and resolution of migration conflicts
+- **Schema Inspection**: Comprehensive database and migration status inspection with visual indicators
+- **Sync Validation**: Automatic detection of database schema sync issues
 
 ## 📋 Prerequisites
 
@@ -315,7 +317,8 @@ python main.py merge-branches feature-auth feature-payments -m "Merge auth and p
 | `validate-migration` | Validate migration for conflicts | `python main.py validate-migration migrations/20250113_add_users.yml` |
 | `create-branch` | Create new migration branch | `python main.py create-branch feature-auth` |
 | `merge-branches` | Merge two branches | `python main.py merge-branches feature-auth feature-payments` |
-| `migration-status` | Show detailed migration status | `python main.py migration-status` |
+| `status` | Comprehensive migration & schema status | `python main.py status` |
+| `status-quick` | Quick status overview | `python main.py status-quick` |
 
 ### **DAG Workflow Example:**
 
@@ -373,6 +376,121 @@ python main.py apply migrations/20250113140000_merge_feature_auth_feature_paymen
 - ✅ **Graph Visualization**: Visual representation of migration dependencies
 - ✅ **Cycle Detection**: Prevents circular dependencies
 - ✅ **Backward Compatible**: Existing linear migrations continue to work
+
+## 🔍 Schema Inspection Utilities
+
+**Comprehensive database and migration status inspection!** The tool provides powerful commands to inspect your database schema and migration status with clear visual indicators.
+
+### **Status Commands:**
+
+#### **1. Comprehensive Status (`status`)**
+```bash
+# Full status report with schema validation
+python main.py status
+
+# Verbose mode with detailed information
+python main.py status --verbose
+
+# Check against specific models file
+python main.py status --models-file custom_models.py
+
+# Skip sync checking for faster execution
+python main.py status --no-check-sync
+```
+
+**Output Example:**
+```
+🔍 Migration & Schema Status Report
+============================================================
+
+📊 MIGRATION STATUS
+------------------------------
+✅ Applied migrations: 6
+⏳ Pending migrations: 0
+
+🔄 DATABASE SYNC STATUS
+------------------------------
+Status: ⚠️ Out of Sync
+  • Extra tables: migration_log
+
+🔗 DEPENDENCY HEALTH
+------------------------------
+✅ DAG is valid - no cycles detected
+✅ No dependency conflicts
+
+🎯 CURRENT STATE
+------------------------------
+Current heads: 20250913122220, 20250913122712
+
+📋 SUMMARY
+------------------------------
+✅ All migrations applied - database is up to date
+⚠️ Database schema may be out of sync - consider running 'python main.py autogenerate'
+```
+
+#### **2. Quick Status (`status-quick`)**
+```bash
+# Quick overview for CI/CD pipelines
+python main.py status-quick
+```
+
+**Output Example:**
+```
+✅ All migrations applied
+📊 Database has 5 tables
+🎯 Current heads: 20250913122220, 20250913122712
+```
+
+### **Status Indicators:**
+
+| Indicator | Meaning | Action Required |
+|-----------|---------|-----------------|
+| ✅ **Applied** | Migration successfully applied to database | None |
+| ⏳ **Pending** | Migration exists but not applied | Run `python main.py apply` |
+| ⚠️ **Out of Sync** | Database schema differs from models | Run `python main.py autogenerate` |
+| ❌ **Error** | Migration or database error | Check logs and fix issues |
+| ❓ **Unknown** | Cannot determine status | Check database connection |
+
+### **Schema Validation Features:**
+
+- **Table Comparison**: Compares current database tables with target models
+- **Missing Tables**: Identifies tables that should exist but don't
+- **Extra Tables**: Identifies tables that exist but aren't in models
+- **Dependency Health**: Validates migration dependency graph
+- **Conflict Detection**: Identifies migration conflicts and circular dependencies
+- **Branch Summary**: Shows migration status by branch
+
+### **Use Cases:**
+
+#### **Development Workflow:**
+```bash
+# Check status before starting work
+python main.py status
+
+# Quick check during development
+python main.py status-quick
+
+# Detailed inspection when debugging
+python main.py status --verbose
+```
+
+#### **CI/CD Pipeline:**
+```bash
+# Quick status check in CI
+python main.py status-quick
+
+# Full validation in staging
+python main.py status --check-sync
+```
+
+#### **Production Monitoring:**
+```bash
+# Monitor migration status
+python main.py status --no-check-sync
+
+# Validate against production models
+python main.py status --models-file production_models.py
+```
 
 ## 📝 Migration File Formats
 

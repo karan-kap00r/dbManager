@@ -28,7 +28,6 @@ likes = Table(
     Column("id", Integer, primary_key=True),
     Column("user_id", Integer, ForeignKey("users.id"), nullable=False),
     Column("post_id", Integer, ForeignKey("posts.id"), nullable=False),
-    Column("test_col_1", String(200))
 )
 
 comments = Table(

@@ -205,3 +205,6 @@ coverage.xml
 
 # Profiling data
 .prof
+
+
+migrate_config.json

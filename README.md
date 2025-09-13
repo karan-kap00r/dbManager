@@ -5,6 +5,7 @@ A powerful, flexible database migration tool built with Python that supports bot
 ## 🚀 Features
 
 - **Dual Migration Support**: YAML-based declarative migrations and Python-based programmatic migrations
+- **Migration Graph (DAG)**: Support for branching migrations with dependency management like Alembic
 - **Automatic Rollback**: Intelligent rollback system with metadata preservation for safe reversions
 - **Schema Auto-Generation**: Automatically detect and generate migrations from schema differences
 - **Enhanced Metadata**: Captures column metadata for accurate rollback operations
@@ -12,6 +13,8 @@ A powerful, flexible database migration tool built with Python that supports bot
 - **Dry-Run Capability**: Preview migration changes before applying them
 - **Comprehensive Logging**: Track all applied migrations with detailed payload information
 - **Multiple Database Support**: Works with any SQLAlchemy-supported database
+- **Parallel Development**: Support for multiple developers working on migrations simultaneously
+- **Conflict Detection**: Automatic detection and resolution of migration conflicts
 
 ## 📋 Prerequisites
 
@@ -251,6 +254,125 @@ python main.py reset-config
 - ✅ **Override When Needed**: Can still override with command-line arguments
 - ✅ **Secure**: Credentials stored in local config file (not in code)
 - ✅ **Flexible**: Easy to change configuration anytime
+
+## 🌳 Migration Graph (DAG) System
+
+**Advanced dependency management for complex migration scenarios!** The tool now supports Directed Acyclic Graphs (DAG) for managing migration dependencies, enabling parallel development and complex branching scenarios.
+
+### **Key DAG Features:**
+
+#### **1. Dependency Management**
+```yaml
+# Migration with dependencies
+version: '20250113120000'
+description: Add user authentication system
+branch: feature-auth
+dependencies: ['20250113100000']  # Depends on previous migration
+revision_id: 'abc12345'
+changes:
+  - add_table:
+      name: users
+      columns:
+        - name: id
+          type: INTEGER
+          primary_key: true
+        - name: username
+          type: VARCHAR(50)
+          unique: true
+```
+
+#### **2. Branch Support**
+```bash
+# Create a new migration branch
+python main.py create-branch feature-auth
+
+# Create a branch from specific migration
+python main.py create-branch feature-payments --base 20250113100000
+```
+
+#### **3. Parallel Development**
+```bash
+# Developer A works on auth branch
+python main.py autogenerate -m "Add user table" --branch feature-auth
+
+# Developer B works on payments branch  
+python main.py autogenerate -m "Add payment table" --branch feature-payments
+
+# Both can work simultaneously without conflicts
+```
+
+#### **4. Merge Branches**
+```bash
+# Merge two branches when ready
+python main.py merge-branches feature-auth feature-payments -m "Merge auth and payments"
+```
+
+### **DAG Commands:**
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `graph` | Show migration dependency graph | `python main.py graph` |
+| `validate-migration` | Validate migration for conflicts | `python main.py validate-migration migrations/20250113_add_users.yml` |
+| `create-branch` | Create new migration branch | `python main.py create-branch feature-auth` |
+| `merge-branches` | Merge two branches | `python main.py merge-branches feature-auth feature-payments` |
+| `migration-status` | Show detailed migration status | `python main.py migration-status` |
+
+### **DAG Workflow Example:**
+
+#### **Scenario: Multiple Developers Working in Parallel**
+
+```bash
+# 1. Initial setup
+python main.py init-db --host localhost --user myuser --password mypass --database mydb --type postgresql
+
+# 2. Developer A creates auth branch
+python main.py create-branch feature-auth
+python main.py autogenerate -m "Add users table" --branch feature-auth
+python main.py apply migrations/20250113120000_add_users_table.yml
+
+# 3. Developer B creates payments branch (from same base)
+python main.py create-branch feature-payments
+python main.py autogenerate -m "Add payments table" --branch feature-payments
+python main.py apply migrations/20250113130000_add_payments_table.yml
+
+# 4. Check migration graph
+python main.py graph
+# Output:
+# Migration Graph:
+# ==================================================
+# 
+# Branch: main
+# --------------------
+#   20250113100000: Initial schema
+#     Dependencies: none
+#     Revision ID: def45678
+# 
+# Branch: feature-auth
+# --------------------
+#   20250113120000: Add users table
+#     Dependencies: 20250113100000
+#     Revision ID: abc12345
+# 
+# Branch: feature-payments
+# --------------------
+#   20250113130000: Add payments table
+#     Dependencies: 20250113100000
+#     Revision ID: ghi78901
+
+# 5. Merge branches when ready
+python main.py merge-branches feature-auth feature-payments -m "Merge auth and payments"
+python main.py apply migrations/20250113140000_merge_feature_auth_feature_payments.yml
+```
+
+### **DAG Benefits:**
+
+- ✅ **Parallel Development**: Multiple developers can work on migrations simultaneously
+- ✅ **Dependency Tracking**: Clear dependency relationships between migrations
+- ✅ **Conflict Detection**: Automatic detection of migration conflicts
+- ✅ **Branch Management**: Easy creation and merging of migration branches
+- ✅ **Graph Visualization**: Visual representation of migration dependencies
+- ✅ **Cycle Detection**: Prevents circular dependencies
+- ✅ **Backward Compatible**: Existing linear migrations continue to work
 
 ## 📝 Migration File Formats
 

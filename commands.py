@@ -4,10 +4,13 @@ import yaml
 import datetime
 import typer
 from dotenv import load_dotenv
-from typing import Optional
+from typing import Optional, List, Dict, Any, Tuple, Set
 from pathlib import Path
 from tabulate import tabulate
 from sqlalchemy import inspect, text, MetaData
+from sqlalchemy.engine import Engine
+from collections import defaultdict, deque
+import uuid
 # Dynamic models import - will be loaded at runtime
 from src.planner import plan_migration
 from src.db import get_engine, init_metadata, MIGRATION_LOG_TABLE
@@ -125,6 +128,298 @@ def get_database_config(
     # Fall back to discovery
     db_url = discover_database_url()
     return db_url, {"db_url": db_url}
+
+
+# ---------------------------
+#  MIGRATION GRAPH (DAG) SYSTEM
+# ---------------------------
+
+class MigrationNode:
+    """Represents a single migration in the DAG."""
+    
+    def __init__(self, version: str, description: str, revision_id: str = None, 
+                 branch: str = None, dependencies: List[str] = None, 
+                 applied_at: str = None, payload: str = None):
+        self.version = version
+        self.description = description
+        self.revision_id = revision_id or str(uuid.uuid4())[:8]
+        self.branch = branch or "main"
+        self.dependencies = dependencies or []
+        self.applied_at = applied_at
+        self.payload = payload
+        self.children: List['MigrationNode'] = []
+        self.parents: List['MigrationNode'] = []
+    
+    def add_dependency(self, dependency_version: str):
+        """Add a dependency to this migration."""
+        if dependency_version not in self.dependencies:
+            self.dependencies.append(dependency_version)
+    
+    def __repr__(self):
+        return f"MigrationNode(version={self.version}, branch={self.branch}, deps={len(self.dependencies)})"
+
+
+class MigrationGraph:
+    """Directed Acyclic Graph for managing migration dependencies."""
+    
+    def __init__(self):
+        self.nodes: Dict[str, MigrationNode] = {}
+        self.branches: Dict[str, List[str]] = defaultdict(list)
+        self.heads: Set[str] = set()  # Current head revisions
+    
+    def add_node(self, node: MigrationNode) -> None:
+        """Add a migration node to the graph."""
+        # Only add if not already present
+        if node.version not in self.nodes:
+            self.nodes[node.version] = node
+            self.branches[node.branch].append(node.version)
+            
+            # Update parent-child relationships
+            for dep_version in node.dependencies:
+                if dep_version in self.nodes:
+                    dep_node = self.nodes[dep_version]
+                    if node not in dep_node.children:
+                        dep_node.children.append(node)
+                    if dep_node not in node.parents:
+                        node.parents.append(dep_node)
+    
+    def get_node(self, version: str) -> Optional[MigrationNode]:
+        """Get a migration node by version."""
+        return self.nodes.get(version)
+    
+    def get_dependencies(self, version: str) -> List[str]:
+        """Get all dependencies for a migration (transitive)."""
+        visited = set()
+        deps = []
+        
+        def collect_deps(node_version: str):
+            if node_version in visited:
+                return
+            visited.add(node_version)
+            
+            node = self.get_node(node_version)
+            if node:
+                for dep in node.dependencies:
+                    if dep not in deps:
+                        deps.append(dep)
+                    collect_deps(dep)
+        
+        collect_deps(version)
+        return deps
+    
+    def topological_sort(self) -> List[str]:
+        """Get migrations in dependency order using topological sort."""
+        in_degree = defaultdict(int)
+        graph = defaultdict(list)
+        
+        # Build graph and calculate in-degrees
+        for version, node in self.nodes.items():
+            in_degree[version] = len(node.dependencies)
+            for dep in node.dependencies:
+                graph[dep].append(version)
+        
+        # Find nodes with no dependencies
+        queue = deque([v for v, degree in in_degree.items() if degree == 0])
+        result = []
+        
+        while queue:
+            current = queue.popleft()
+            result.append(current)
+            
+            # Reduce in-degree for dependent nodes
+            for dependent in graph[current]:
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
+        
+        # Check for cycles
+        if len(result) != len(self.nodes):
+            raise ValueError("Cycle detected in migration dependencies!")
+        
+        return result
+    
+    def get_heads(self) -> List[str]:
+        """Get current head revisions (migrations with no children)."""
+        heads = []
+        for version, node in self.nodes.items():
+            if not node.children:
+                heads.append(version)
+        return heads
+    
+    def find_conflicts(self, new_version: str, new_dependencies: List[str], check_existing: bool = True) -> List[str]:
+        """Find potential conflicts when adding a new migration."""
+        conflicts = []
+        
+        # Check if version already exists (only when adding new migrations)
+        if check_existing and new_version in self.nodes:
+            conflicts.append(f"Migration {new_version} already exists")
+        
+        # Check for circular dependencies
+        if new_version in new_dependencies:
+            conflicts.append(f"Migration {new_version} cannot depend on itself")
+        
+        # Check for missing dependencies
+        for dep in new_dependencies:
+            if dep not in self.nodes:
+                conflicts.append(f"Dependency {dep} does not exist")
+        
+        return conflicts
+    
+    def get_merge_base(self, branch1: str, branch2: str) -> Optional[str]:
+        """Find the common ancestor of two branches."""
+        # Simple implementation - find the latest common migration
+        branch1_migrations = [v for v, n in self.nodes.items() if n.branch == branch1]
+        branch2_migrations = [v for v, n in self.nodes.items() if n.branch == branch2]
+        
+        # Find common dependencies
+        common = set()
+        for v1 in branch1_migrations:
+            for v2 in branch2_migrations:
+                deps1 = set(self.get_dependencies(v1))
+                deps2 = set(self.get_dependencies(v2))
+                common.update(deps1.intersection(deps2))
+        
+        if not common:
+            return None
+        
+        # Return the latest common migration
+        return max(common, key=lambda v: self.nodes[v].version)
+    
+    def visualize(self) -> str:
+        """Generate a text representation of the migration graph."""
+        lines = []
+        lines.append("Migration Graph:")
+        lines.append("=" * 50)
+        
+        # Group by branch and remove duplicates
+        branch_migrations = defaultdict(set)
+        for version, node in self.nodes.items():
+            branch_migrations[node.branch].add(version)
+        
+        # Group by branch
+        for branch, versions in branch_migrations.items():
+            lines.append(f"\nBranch: {branch}")
+            lines.append("-" * 20)
+            
+            for version in sorted(versions):
+                node = self.nodes[version]
+                deps_str = ", ".join(node.dependencies) if node.dependencies else "none"
+                status = "✅ Applied" if node.applied_at else "⏳ Pending"
+                lines.append(f"  {version}: {node.description}")
+                lines.append(f"    Status: {status}")
+                lines.append(f"    Dependencies: {deps_str}")
+                lines.append(f"    Revision ID: {node.revision_id}")
+        
+        return "\n".join(lines)
+
+
+def load_migration_graph(engine: Engine) -> MigrationGraph:
+    """Load migration graph from database."""
+    graph = MigrationGraph()
+    
+    with engine.connect() as conn:
+        # Check if DAG columns exist
+        try:
+            result = conn.execute(
+                text(f"SELECT version, description, dependencies, branch, revision_id, applied_at, payload "
+                     f"FROM {MIGRATION_LOG_TABLE} ORDER BY version")
+            ).fetchall()
+        except Exception:
+            # Fallback for old schema without DAG columns
+            result = conn.execute(
+                text(f"SELECT version, description, NULL as dependencies, 'main' as branch, "
+                     f"SUBSTR(version, 1, 8) as revision_id, applied_at, payload "
+                     f"FROM {MIGRATION_LOG_TABLE} ORDER BY version")
+            ).fetchall()
+        
+        for row in result:
+            version, description, deps_json, branch, revision_id, applied_at, payload = row
+            dependencies = json.loads(deps_json) if deps_json else []
+            
+            # Ensure we have valid values
+            branch = branch or 'main'
+            revision_id = revision_id or str(uuid.uuid4())[:8]
+            
+            node = MigrationNode(
+                version=version,
+                description=description,
+                revision_id=revision_id,
+                branch=branch,
+                dependencies=dependencies,
+                applied_at=applied_at,
+                payload=payload
+            )
+            graph.add_node(node)
+    
+    return graph
+
+
+def validate_migration_dependencies(migration_file: str, graph: MigrationGraph) -> List[str]:
+    """Validate migration dependencies and detect conflicts."""
+    try:
+        with open(migration_file, 'r') as f:
+            data = yaml.safe_load(f)
+        
+        version = data.get('version')
+        dependencies = data.get('dependencies', [])
+        branch = data.get('branch', 'main')
+        
+        conflicts = graph.find_conflicts(version, dependencies)
+        
+        # Additional validations
+        if not version:
+            conflicts.append("Migration file missing version")
+        
+        if not data.get('description'):
+            conflicts.append("Migration file missing description")
+        
+        return conflicts
+        
+    except Exception as e:
+        return [f"Error reading migration file: {e}"]
+
+
+def create_merge_migration(branch1: str, branch2: str, graph: MigrationGraph, 
+                          message: str = "Merge branches") -> str:
+    """Create a merge migration to combine two branches."""
+    merge_base = graph.get_merge_base(branch1, branch2)
+    if not merge_base:
+        raise ValueError("No common ancestor found between branches")
+    
+    version = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
+    revision_id = str(uuid.uuid4())[:8]
+    
+    # Get heads of both branches
+    branch1_head = max([v for v, n in graph.nodes.items() if n.branch == branch1], 
+                      key=lambda v: graph.nodes[v].version, default=None)
+    branch2_head = max([v for v, n in graph.nodes.items() if n.branch == branch2], 
+                      key=lambda v: graph.nodes[v].version, default=None)
+    
+    if not branch1_head or not branch2_head:
+        raise ValueError("Could not find branch heads")
+    
+    dependencies = [branch1_head, branch2_head]
+    
+    migration_data = {
+        'version': version,
+        'description': f"{message} ({branch1} + {branch2})",
+        'branch': 'main',
+        'dependencies': dependencies,
+        'revision_id': revision_id,
+        'changes': [
+            {
+                'comment': f"Merge migration combining {branch1} and {branch2} branches"
+            }
+        ]
+    }
+    
+    filename = f"migrations/{version}_merge_{branch1}_{branch2}.yml"
+    Path("migrations").mkdir(exist_ok=True)
+    
+    with open(filename, 'w') as f:
+        yaml.safe_dump(migration_data, f, default_flow_style=False)
+    
+    return filename
 
 
 def discover_database_url(db_url: Optional[str] = None) -> str:
@@ -255,7 +550,7 @@ def build_database_url(
         
         password_part = f":{password}" if password else ""
         port_part = f":{port}" if port else ":3306"
-        return f"mysql://{user}{password_part}@{host}{port_part}/{database}"
+        return f"mysql+pymysql://{user}{password_part}@{host}{port_part}/{database}"
     
     else:
         raise ValueError(f"Unsupported database type: {db_type}")
@@ -658,10 +953,10 @@ def apply(
                 except Exception as e:
                     print(f"⚠️ Failed to enhance drop_table metadata for {tbl}: {e}")
                     # Fallback to basic metadata
-                    payload["drop_table"]["meta"] = {
-                        "columns": inspector.get_columns(tbl),
-                        "indexes": inspector.get_indexes(tbl),
-                    }
+                payload["drop_table"]["meta"] = {
+                    "columns": inspector.get_columns(tbl),
+                    "indexes": inspector.get_indexes(tbl),
+                }
 
             enhanced_actions.append(action)
 
@@ -744,18 +1039,39 @@ def apply(
                 # For other operations, store as-is
                 rollback_payload.append({action.type: action.payload})
 
+        # Load migration file to get DAG metadata
+        migration_metadata = {
+            'dependencies': [],
+            'branch': 'main',
+            'revision_id': str(uuid.uuid4())[:8]
+        }
+        
+        try:
+            with open(path, 'r') as f:
+                migration_data = yaml.safe_load(f)
+                migration_metadata = {
+                    'dependencies': migration_data.get('dependencies', []),
+                    'branch': migration_data.get('branch', 'main'),
+                    'revision_id': migration_data.get('revision_id', str(uuid.uuid4())[:8])
+                }
+        except Exception as e:
+            print(f"⚠️ Could not load migration metadata, using defaults: {e}")
+
         with engine.connect() as conn:
             conn.execute(
                 text(
                     f"INSERT INTO {MIGRATION_LOG_TABLE} "
-                    f"(version, description, applied_at, payload) "
-                    f"VALUES (:v, :d, :a, :p)"
+                    f"(version, description, applied_at, payload, dependencies, branch, revision_id) "
+                    f"VALUES (:v, :d, :a, :p, :deps, :branch, :rev)"
                 ),
                 {
                     "v": migration.version,
                     "d": migration.description,
                     "a": datetime.datetime.utcnow().isoformat(),
                     "p": json.dumps(rollback_payload),
+                    "deps": json.dumps(migration_metadata['dependencies']),
+                    "branch": migration_metadata['branch'],
+                    "rev": migration_metadata['revision_id']
                 },
             )
             conn.commit()
@@ -890,7 +1206,7 @@ def rollback(
                             text(
                                 f"ALTER TABLE {tbl} ADD COLUMN {col} {meta.get('type', 'VARCHAR(255)')}"
                             )
-                        )
+                        )                        
                         print(f"↩️ Restored column {col} on {tbl}")
                     except Exception as e:
                         print("⚠️ Rollback column restore failed:", e)
@@ -1024,6 +1340,7 @@ def autogenerate(
     db_type: Optional[str] = typer.Option(None, "--type", help="Database type (overrides saved config)"),
     message: str = typer.Option("auto migration", "-m", "--message"),
     models_file: Optional[str] = typer.Option(None, "--models-file", help="Path to models file (auto-discovered if not provided)"),
+    branch: str = typer.Option("main", "--branch", help="Branch name for the migration"),
 ):
     """Auto-generate migration by comparing database schema with models metadata.
     
@@ -1139,7 +1456,7 @@ def autogenerate(
             except Exception as e:
                 print(f"⚠️ Failed to capture metadata for {table}: {e}")
                 # Fallback to basic drop_table without metadata
-                diffs.append({"drop_table": {"table": table}})
+            diffs.append({"drop_table": {"table": table}})
 
     # Columns
     for table in target_tables:
@@ -1162,7 +1479,7 @@ def autogenerate(
                         }
                     }
                 )
-
+                
         # Dropped columns (💡 now with meta info)
         for col in existing_cols:
             if col not in target_cols:
@@ -1180,7 +1497,7 @@ def autogenerate(
                         }
                     }
                 )
-
+        
         # Altered columns
         for col, target_col in target_cols.items():
             if col in existing_cols:
@@ -1217,7 +1534,7 @@ def autogenerate(
                         }
                     }
                 )
-
+                
         # Dropped indexes
         for idx in existing_indexes:
             if idx not in target_indexes:
@@ -1235,8 +1552,8 @@ def autogenerate(
                 except Exception as e:
                     print(f"⚠️ Failed to capture metadata for index {idx} on {table}: {e}")
                     # Fallback to basic drop_index without metadata
-                    diffs.append({"drop_index": {"table": table, "name": idx}})
-
+                diffs.append({"drop_index": {"table": table, "name": idx}})
+        
     if not diffs:
         print("✅ No changes detected. Database is up-to-date.")
         return
@@ -1245,13 +1562,22 @@ def autogenerate(
     filename = f"migrations/{version}_{message.replace(' ', '_')}.yml"
     Path("migrations").mkdir(exist_ok=True)
 
+    # Create migration with DAG support
+    revision_id = str(uuid.uuid4())[:8]
+    migration_data = {
+        'version': version,
+        'description': message,
+        'branch': branch,
+        'dependencies': [],
+        'revision_id': revision_id,
+        'changes': diffs
+    }
+
     safe_diffs = json.loads(json.dumps(diffs))
+    migration_data['changes'] = safe_diffs
+    
     with open(filename, "w") as f:
-        yaml.safe_dump(
-            {"version": version, "description": message, "changes": safe_diffs},
-            f,
-            sort_keys=False,
-        )
+        yaml.safe_dump(migration_data, f, default_flow_style=False)
 
     print(f"📦 New migration written: {filename}")
 
@@ -1420,3 +1746,322 @@ def reset_config():
         print("💡 Database configuration reset - tool will use auto-discovery for future commands")
     else:
         print("ℹ️  No configuration file found - nothing to reset")
+
+
+# ---------------------------
+#  MIGRATION GRAPH COMMANDS
+# ---------------------------
+
+@app.command("graph")
+def show_graph(
+    db: Optional[str] = typer.Option(None, "--db", help="Database connection URL (uses saved config if not provided)"),
+    host: Optional[str] = typer.Option(None, "--host", help="Database host (overrides saved config)"),
+    port: Optional[int] = typer.Option(None, "--port", help="Database port (overrides saved config)"),
+    user: Optional[str] = typer.Option(None, "--user", help="Database username (overrides saved config)"),
+    password: Optional[str] = typer.Option(None, "--password", help="Database password (overrides saved config)"),
+    database: Optional[str] = typer.Option(None, "--database", help="Database name (overrides saved config)"),
+    db_type: Optional[str] = typer.Option(None, "--type", help="Database type (overrides saved config)"),
+):
+    """Show the migration dependency graph.
+    
+    This command displays the current migration graph showing:
+    - All migrations and their dependencies
+    - Branch structure
+    - Current head revisions
+    - Dependency relationships
+    
+    Example:
+        $ python main.py graph
+    """
+    try:
+        # Get database configuration
+        db_url, config = get_database_config(
+            db=db, host=host, port=port, user=user,
+            password=password, database=database, db_type=db_type
+        )
+        
+        engine = get_engine(db_url)
+        graph = load_migration_graph(engine)
+        
+        if not graph.nodes:
+            print("📭 No migrations found in database")
+            return
+        
+        print(graph.visualize())
+        
+        # Show additional info
+        heads = graph.get_heads()
+        print(f"\nCurrent heads: {', '.join(heads) if heads else 'None'}")
+        
+        try:
+            sorted_migrations = graph.topological_sort()
+            print(f"\nDependency order: {' -> '.join(sorted_migrations)}")
+        except ValueError as e:
+            print(f"\n❌ Graph validation error: {e}")
+            
+    except Exception as e:
+        print(f"❌ Error loading migration graph: {e}")
+        print("💡 Run 'python main.py init-db' first to configure database connection")
+
+
+@app.command("validate-migration")
+def validate_migration(
+    migration_file: str = typer.Argument(..., help="Path to migration file to validate"),
+    db: Optional[str] = typer.Option(None, "--db", help="Database connection URL (uses saved config if not provided)"),
+    host: Optional[str] = typer.Option(None, "--host", help="Database host (overrides saved config)"),
+    port: Optional[int] = typer.Option(None, "--port", help="Database port (overrides saved config)"),
+    user: Optional[str] = typer.Option(None, "--user", help="Database username (overrides saved config)"),
+    password: Optional[str] = typer.Option(None, "--password", help="Database password (overrides saved config)"),
+    database: Optional[str] = typer.Option(None, "--database", help="Database name (overrides saved config)"),
+    db_type: Optional[str] = typer.Option(None, "--type", help="Database type (overrides saved config)"),
+):
+    """Validate a migration file for dependency conflicts.
+    
+    This command checks a migration file for:
+    - Dependency conflicts
+    - Circular dependencies
+    - Missing dependencies
+    - Valid structure
+    
+    Example:
+        $ python main.py validate-migration migrations/20250113_add_users.yml
+    """
+    try:
+        # Get database configuration
+        db_url, config = get_database_config(
+            db=db, host=host, port=port, user=user,
+            password=password, database=database, db_type=db_type
+        )
+        
+        engine = get_engine(db_url)
+        graph = load_migration_graph(engine)
+        
+        conflicts = validate_migration_dependencies(migration_file, graph)
+        
+        if conflicts:
+            print("❌ Migration validation failed:")
+            for conflict in conflicts:
+                print(f"  - {conflict}")
+        else:
+            print("✅ Migration validation passed - no conflicts detected")
+            
+    except Exception as e:
+        print(f"❌ Error validating migration: {e}")
+
+
+@app.command("create-branch")
+def create_branch(
+    branch_name: str = typer.Argument(..., help="Name of the new branch"),
+    base_version: Optional[str] = typer.Option(None, "--base", help="Base migration version to branch from"),
+    db: Optional[str] = typer.Option(None, "--db", help="Database connection URL (uses saved config if not provided)"),
+    host: Optional[str] = typer.Option(None, "--host", help="Database host (overrides saved config)"),
+    port: Optional[int] = typer.Option(None, "--port", help="Database port (overrides saved config)"),
+    user: Optional[str] = typer.Option(None, "--user", help="Database username (overrides saved config)"),
+    password: Optional[str] = typer.Option(None, "--password", help="Database password (overrides saved config)"),
+    database: Optional[str] = typer.Option(None, "--database", help="Database name (overrides saved config)"),
+    db_type: Optional[str] = typer.Option(None, "--type", help="Database type (overrides saved config)"),
+):
+    """Create a new migration branch.
+    
+    This command creates a new branch for parallel development:
+    - Creates a branch marker migration
+    - Sets up dependency tracking
+    - Enables parallel migration development
+    
+    Example:
+        $ python main.py create-branch feature-auth
+        $ python main.py create-branch feature-auth --base 20250113000000
+    """
+    try:
+        # Get database configuration
+        db_url, config = get_database_config(
+            db=db, host=host, port=port, user=user,
+            password=password, database=database, db_type=db_type
+        )
+        
+        engine = get_engine(db_url)
+        graph = load_migration_graph(engine)
+        
+        # Find base version
+        if not base_version:
+            heads = graph.get_heads()
+            if not heads:
+                print("❌ No migrations found to branch from")
+                return
+            base_version = heads[0]  # Use first head as base
+        
+        if base_version not in graph.nodes:
+            print(f"❌ Base migration {base_version} not found")
+            return
+        
+        # Create branch migration
+        version = datetime.datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        revision_id = str(uuid.uuid4())[:8]
+        
+        migration_data = {
+            'version': version,
+            'description': f"Create branch {branch_name}",
+            'branch': branch_name,
+            'dependencies': [base_version],
+            'revision_id': revision_id,
+            'changes': [
+                {
+                    'comment': f"Branch point for {branch_name} development"
+                }
+            ]
+        }
+        
+        filename = f"migrations/{version}_branch_{branch_name}.yml"
+        Path("migrations").mkdir(exist_ok=True)
+        
+        with open(filename, 'w') as f:
+            yaml.safe_dump(migration_data, f, default_flow_style=False)
+        
+        print(f"✅ Created branch '{branch_name}' from {base_version}")
+        print(f"📁 Branch migration: {filename}")
+        print(f"🆔 Revision ID: {revision_id}")
+        
+    except Exception as e:
+        print(f"❌ Error creating branch: {e}")
+
+
+@app.command("merge-branches")
+def merge_branches(
+    branch1: str = typer.Argument(..., help="First branch to merge"),
+    branch2: str = typer.Argument(..., help="Second branch to merge"),
+    message: str = typer.Option("Merge branches", "-m", "--message", help="Merge commit message"),
+    db: Optional[str] = typer.Option(None, "--db", help="Database connection URL (uses saved config if not provided)"),
+    host: Optional[str] = typer.Option(None, "--host", help="Database host (overrides saved config)"),
+    port: Optional[int] = typer.Option(None, "--port", help="Database port (overrides saved config)"),
+    user: Optional[str] = typer.Option(None, "--user", help="Database username (overrides saved config)"),
+    password: Optional[str] = typer.Option(None, "--password", help="Database password (overrides saved config)"),
+    database: Optional[str] = typer.Option(None, "--database", help="Database name (overrides saved config)"),
+    db_type: Optional[str] = typer.Option(None, "--type", help="Database type (overrides saved config)"),
+):
+    """Merge two migration branches.
+    
+    This command creates a merge migration that combines two branches:
+    - Finds common ancestor
+    - Creates merge migration with dependencies on both branch heads
+    - Resolves conflicts if any
+    
+    Example:
+        $ python main.py merge-branches feature-auth feature-payments
+        $ python main.py merge-branches feature-auth feature-payments -m "Merge auth and payments"
+    """
+    try:
+        # Get database configuration
+        db_url, config = get_database_config(
+            db=db, host=host, port=port, user=user,
+            password=password, database=database, db_type=db_type
+        )
+        
+        engine = get_engine(db_url)
+        graph = load_migration_graph(engine)
+        
+        # Check if branches exist
+        branch1_migrations = [v for v, n in graph.nodes.items() if n.branch == branch1]
+        branch2_migrations = [v for v, n in graph.nodes.items() if n.branch == branch2]
+        
+        if not branch1_migrations:
+            print(f"❌ Branch '{branch1}' not found")
+            return
+        if not branch2_migrations:
+            print(f"❌ Branch '{branch2}' not found")
+            return
+        
+        # Create merge migration
+        filename = create_merge_migration(branch1, branch2, graph, message)
+        
+        print(f"✅ Created merge migration: {filename}")
+        print(f"📋 Merging branches: {branch1} + {branch2}")
+        
+        # Show merge info
+        merge_base = graph.get_merge_base(branch1, branch2)
+        if merge_base:
+            print(f"🔗 Common ancestor: {merge_base}")
+        
+    except Exception as e:
+        print(f"❌ Error merging branches: {e}")
+
+
+@app.command("migration-status")
+def migration_status(
+    db: Optional[str] = typer.Option(None, "--db", help="Database connection URL (uses saved config if not provided)"),
+    host: Optional[str] = typer.Option(None, "--host", help="Database host (overrides saved config)"),
+    port: Optional[int] = typer.Option(None, "--port", help="Database port (overrides saved config)"),
+    user: Optional[str] = typer.Option(None, "--user", help="Database username (overrides saved config)"),
+    password: Optional[str] = typer.Option(None, "--password", help="Database password (overrides saved config)"),
+    database: Optional[str] = typer.Option(None, "--database", help="Database name (overrides saved config)"),
+    db_type: Optional[str] = typer.Option(None, "--type", help="Database type (overrides saved config)"),
+):
+    """Show detailed migration status and dependency information.
+    
+    This command provides comprehensive status information:
+    - Applied migrations by branch
+    - Pending migrations
+    - Dependency conflicts
+    - Graph health status
+    
+    Example:
+        $ python main.py migration-status
+    """
+    try:
+        # Get database configuration
+        db_url, config = get_database_config(
+            db=db, host=host, port=port, user=user,
+            password=password, database=database, db_type=db_type
+        )
+        
+        engine = get_engine(db_url)
+        graph = load_migration_graph(engine)
+        
+        if not graph.nodes:
+            print("📭 No migrations found")
+            return
+        
+        print("📊 Migration Status Report")
+        print("=" * 50)
+        
+        # Show branches
+        for branch, versions in graph.branches.items():
+            print(f"\n🌿 Branch: {branch}")
+            print("-" * 20)
+            
+            for version in sorted(versions):
+                node = graph.nodes[version]
+                status = "✅ Applied" if node.applied_at else "⏳ Pending"
+                deps_str = ", ".join(node.dependencies) if node.dependencies else "none"
+                print(f"  {version}: {node.description}")
+                print(f"    Status: {status}")
+                print(f"    Dependencies: {deps_str}")
+                print(f"    Revision: {node.revision_id}")
+        
+        # Show heads
+        heads = graph.get_heads()
+        print(f"\n🎯 Current heads: {', '.join(heads) if heads else 'None'}")
+        
+        # Validate graph
+        try:
+            sorted_migrations = graph.topological_sort()
+            print(f"\n✅ Graph is valid - no cycles detected")
+            print(f"📋 Dependency order: {' -> '.join(sorted_migrations)}")
+        except ValueError as e:
+            print(f"\n❌ Graph validation failed: {e}")
+        
+        # Show conflicts (only check for circular dependencies and missing deps)
+        print(f"\n🔍 Checking for conflicts...")
+        conflict_count = 0
+        for version, node in graph.nodes.items():
+            conflicts = graph.find_conflicts(version, node.dependencies, check_existing=False)
+            if conflicts:
+                conflict_count += len(conflicts)
+                print(f"  ❌ {version}: {', '.join(conflicts)}")
+        
+        if conflict_count == 0:
+            print("✅ No conflicts detected")
+        else:
+            print(f"⚠️  Found {conflict_count} conflicts")
+            
+    except Exception as e:
+        print(f"❌ Error checking migration status: {e}")

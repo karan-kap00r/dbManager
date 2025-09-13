@@ -18,6 +18,9 @@ def init_metadata(engine: Engine):
         Column("description", String(255), nullable=True),
         Column("applied_at", String(255), nullable=False),
         Column("payload", Text, nullable=True),
+        Column("dependencies", Text, nullable=True),  # JSON array of dependency versions
+        Column("branch", String(255), nullable=True),  # Branch name for parallel migrations
+        Column("revision_id", String(255), nullable=True),  # Unique revision ID
     )
     meta.create_all(engine)
     print("Initialized migration metadata table.")

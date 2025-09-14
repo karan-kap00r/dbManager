@@ -29,16 +29,16 @@ def read_version():
 setup(
     name="dbporter",
     version=read_version(),
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="Karan Kapoor",
+    author_email="karankapoor0062@gmail.com",
     description="A powerful database migration tool with DAG support, automatic rollback, and schema inspection",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/dbPorter",
+    url="https://github.com/karan-kap00r/dbPorter",
     project_urls={
-        "Bug Reports": "https://github.com/yourusername/dbPorter/issues",
-        "Source": "https://github.com/yourusername/dbPorter",
-        "Documentation": "https://github.com/yourusername/dbPorter#readme",
+        "Bug Reports": "",
+        "Source": "https://github.com/karan-kap00r/dbPorter",
+        "Documentation": "https://github.com/karan-kap00r/dbPorter/blob/main/README.md",
     },
     packages=find_packages(),
     classifiers=[
@@ -56,7 +56,6 @@ setup(
         "Programming Language :: Python :: 3.12",
         "Operating System :: OS Independent",
         "Environment :: Console",
-        "Framework :: SQLAlchemy",
     ],
     keywords=[
         "database", "migration", "schema", "sqlalchemy", "yaml", "dag", 

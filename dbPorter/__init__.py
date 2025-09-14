@@ -8,9 +8,9 @@ This tool provides comprehensive schema management capabilities with automatic
 rollback support and metadata preservation.
 """
 
-__version__ = "0.1.0"
-__author__ = "Your Name"
-__email__ = "your.email@example.com"
+__version__ = "0.1.1"
+__author__ = "Karan Kapoor"
+__email__ = "karan.kapoor@gmail.com"
 __description__ = "A powerful database migration tool with DAG support, automatic rollback, and schema inspection"
 
 # Import the main functions for programmatic access

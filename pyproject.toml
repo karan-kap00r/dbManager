@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dbporter"
-version = "0.1.1"
+version = "0.1.15"
 description = "A powerful database migration tool with DAG support, automatic rollback, and schema inspection"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Karan Kapoor", email = "your.email@example.com"}
+    {name = "Karan Kapoor", email = "karankapoor0062@gmail.com"}
 ]
 maintainers = [
-    {name = "Karan Kapoor", email = "your.email@example.com"}
+    {name = "Karan Kapoor", email = "karankapoor0062@gmail.com"}
 ]
 keywords = [
     "database", "migration", "schema", "sqlalchemy", "yaml", "dag", 

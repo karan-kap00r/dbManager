@@ -32,6 +32,7 @@ CONFIG_FILE = _CONFIG_FILE
 # Global configuration store for programmatic access
 _global_config = {}
 
+
 def set_database_url(db_url: str):
     """
     Set database URL programmatically for security-conscious organizations.
@@ -43,19 +44,54 @@ def set_database_url(db_url: str):
         db_url: Database connection URL (e.g., "postgresql://user:pass@host:port/db")
         
     Example:
-        from migrateDB import set_database_url
+        from dbPorter import set_database_url
         set_database_url("postgresql://user:pass@localhost:5432/mydb")
     """
     global _global_config
     _global_config["db_url"] = db_url
-    print(f"🔐 Database URL set programmatically (not saved to file)")
+    
+    # Parse URL components and save to config file (excluding sensitive data)
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(db_url)
+        
+        # Extract database type from scheme
+        scheme = parsed.scheme.lower()
+        if scheme.startswith('mysql'):
+            db_type = 'mysql'
+        elif scheme.startswith('postgresql'):
+            db_type = 'postgresql'
+        elif scheme == 'sqlite':
+            db_type = 'sqlite'
+        else:
+            db_type = 'unknown'
+        
+        # Save configuration (excluding sensitive data)
+        save_database_config(
+            db_url=None,  # Don't save URL with credentials
+            host=parsed.hostname,
+            port=parsed.port,
+            user=parsed.username,
+            password=None,  # Never save passwords
+            database=parsed.path.lstrip('/') if parsed.path else None,
+            db_type=db_type
+        )
+        
+        print(f"🔐 Database URL set programmatically")
+        print(f"📁 Non-sensitive configuration saved to {CONFIG_FILE}")
+        print(f"💡 Use environment variables or command line arguments for CLI commands")
+        
+    except Exception as e:
+        # If parsing fails, still store the URL but don't save config
+        print(f"🔐 Database URL set programmatically (parsing failed: {e})")
+        print(f"⚠️  Configuration not saved to file")
 
 def get_database_url() -> Optional[str]:
     """
     Get the programmatically set database URL.
     
     Returns:
-        Database URL if set programmatically, None otherwise
+        Database URL if set programmatically in the current process, None otherwise
     """
     return _global_config.get("db_url")
 
@@ -69,32 +105,71 @@ def save_database_config(
     database: Optional[str] = None,
     db_type: str = "sqlite"
 ) -> None:
-    """Save database configuration to file for future use.
+    """Save database configuration to file for future use (excluding sensitive data).
+    
+    SECURITY NOTE: This function deliberately excludes passwords and sensitive data
+    from the saved configuration to prevent credential exposure in version control.
     
     Args:
-        db_url: Complete database URL.
+        db_url: Complete database URL (will be stored if no sensitive data detected).
         host: Database host.
         port: Database port.
         user: Database username.
-        password: Database password.
+        password: Database password (NOT SAVED for security).
         database: Database name.
         db_type: Database type.
     """
+    # Only save non-sensitive configuration data
     config = {
-        "db_url": db_url,
         "host": host,
         "port": port,
         "user": user,
-        "password": password,
         "database": database,
         "db_type": db_type,
-        "saved_at": datetime.datetime.utcnow().isoformat()
+        "saved_at": datetime.datetime.utcnow().isoformat(),
+        "security_note": "Passwords and sensitive data are not stored for security",
+        "requires_credentials": password is not None or (db_url and _contains_sensitive_data(db_url))
     }
+    
+    # Only save db_url if it doesn't contain sensitive information
+    if db_url and not _contains_sensitive_data(db_url):
+        config["db_url"] = db_url
+    else:
+        config["db_url"] = None
+        config["requires_credentials"] = True
     
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2)
     
-    print(f"💾 Database configuration saved to {CONFIG_FILE}")
+    print(f"💾 Database configuration saved to {CONFIG_FILE} (excluding sensitive data)")
+    print(f"🔐 Security: Passwords and sensitive data are not stored in the config file")
+    print(f"💡 Use environment variables or programmatic configuration for credentials")
+
+
+def _contains_sensitive_data(db_url: str) -> bool:
+    """Check if database URL contains sensitive information like passwords.
+    
+    Args:
+        db_url: Database connection URL
+        
+    Returns:
+        True if URL contains sensitive data, False otherwise
+    """
+    if not db_url:
+        return False
+    
+    # Check for password patterns in URL
+    sensitive_patterns = [
+        'password=', 'passwd=', 'pwd=',
+        '://[^:]+:[^@]+@',  # user:password@ pattern
+    ]
+    
+    import re
+    for pattern in sensitive_patterns:
+        if re.search(pattern, db_url, re.IGNORECASE):
+            return True
+    
+    return False
 
 
 def load_database_config() -> Optional[dict]:
@@ -124,15 +199,18 @@ def get_database_config(
     database: Optional[str] = None,
     db_type: Optional[str] = None
 ) -> tuple[str, dict]:
-    """Get database configuration with priority: command args > programmatic > saved config > discovery.
+    """Get database configuration with Alembic-style priority: command args > env vars > saved config > discovery.
+    
+    This follows Alembic's pattern where command line arguments override everything,
+    then environment variables, then saved configuration, then discovery.
     
     Returns:
         Tuple of (database_url, config_dict).
     """
-    # Priority 1: Command line arguments
+    # Priority 1: Command line arguments (highest priority - like Alembic's env.py override)
     if any([db, host, user, database]):
         if db:
-            return db, {"db_url": db}
+            return db, {"db_url": db, "source": "command_line"}
         
         # Build from components
         final_db_type = db_type or "sqlite"
@@ -147,24 +225,56 @@ def get_database_config(
             "user": user,
             "password": password,
             "database": database,
-            "db_type": final_db_type
+            "db_type": final_db_type,
+            "source": "command_line"
         }
     
-    # Priority 2: Programmatically set URL (security-conscious approach)
-    programmatic_url = get_database_url()
-    if programmatic_url:
-        print(f"🔐 Using programmatically set database URL")
-        return programmatic_url, {"db_url": programmatic_url, "source": "programmatic"}
+    # Priority 2: Environment variables (like Alembic's DATABASE_URL)
+    env_db_url = os.getenv('DBPORTER_DATABASE_URL') or os.getenv('DATABASE_URL')
+    if env_db_url:
+        print(f"🔐 Using database URL from environment variable")
+        return env_db_url, {"db_url": env_db_url, "source": "environment"}
     
-    # Priority 3: Saved configuration
+    # Priority 3: Saved configuration (like Alembic's alembic.ini fallback)
     saved_config = load_database_config()
     if saved_config and saved_config.get("db_url"):
         print(f"📁 Using saved database configuration from {CONFIG_FILE}")
-        return saved_config["db_url"], saved_config
+        return saved_config["db_url"], {**saved_config, "source": "saved_config"}
     
-    # Priority 4: Fall back to discovery
-    db_url = discover_database_url()
-    return db_url, {"db_url": db_url}
+    # Priority 4: Discovery (last resort)
+    try:
+        db_url = discover_database_url()
+        # Extract components from discovered URL
+        from urllib.parse import urlparse
+        parsed = urlparse(db_url)
+        scheme = parsed.scheme.lower()
+        
+        config = {
+            "db_url": db_url,
+            "source": "discovery",
+            "db_type": "mysql" if scheme.startswith('mysql') else "postgresql" if scheme.startswith('postgresql') else "sqlite" if scheme == 'sqlite' else "unknown"
+        }
+        
+        # Extract individual components for non-SQLite databases
+        if scheme != 'sqlite':
+            config["host"] = parsed.hostname or "localhost"
+            config["port"] = parsed.port or (3306 if scheme.startswith('mysql') else 5432)
+            config["user"] = parsed.username
+            config["database"] = parsed.path.lstrip('/') if parsed.path else None
+        else:
+            # For SQLite, database is the file path
+            config["database"] = parsed.path.lstrip('/') if parsed.path else "migrate.db"
+            config["host"] = None
+            config["port"] = None
+            config["user"] = None
+            
+        return db_url, config
+    except Exception as e:
+        # If discovery fails, fall back to SQLite default
+        print(f"⚠️ Database discovery failed: {e}")
+        print("💡 Using SQLite default database")
+        default_url = "sqlite:///migrate.db"
+        return default_url, {"db_url": default_url, "source": "fallback", "db_type": "sqlite", "host": None, "port": None, "user": None, "database": "migrate.db"}
 
 
 # ---------------------------
@@ -462,6 +572,16 @@ def create_merge_migration(branch1: str, branch2: str, graph: MigrationGraph,
 def discover_database_url(db_url: Optional[str] = None) -> str:
     """Discover and validate the database URL.
     
+    This function automatically finds database URLs from various sources:
+    1. Environment variables (DATABASE_URL, DB_URL, etc.)
+    2. Python config files (config.py, settings.py, etc.)
+    3. .env files
+    4. Default fallback to SQLite
+    
+    Supported config.py patterns:
+    - Variables: DATABASE_URL, DB_URL, database_url, db_url, DB_STRING, db_string
+    - Functions: get_database_url(), get_db_url(), database_url(), db_url()
+    
     Args:
         db_url: Optional database URL. If None, auto-discovers.
         
@@ -472,11 +592,13 @@ def discover_database_url(db_url: Optional[str] = None) -> str:
         ValueError: If no database URL is found or invalid.
     """
     if db_url:
+        print(f"📁 Using database URL from command line argument")
         return db_url
     
     # Try environment variables first
     env_url = os.getenv("DB_URL")
     if env_url:
+        print(f"📁 Using database URL from environment variable")
         return env_url
     
     # Try common environment variable names
@@ -516,12 +638,26 @@ def discover_database_url(db_url: Optional[str] = None) -> str:
                     spec.loader.exec_module(config)
                     
                     # Look for common database URL attributes
-                    for attr in ['DATABASE_URL', 'DB_URL', 'database_url', 'db_url']:
+                    for attr in ['DATABASE_URL', 'DB_URL', 'database_url', 'db_url', 'DB_STRING', 'db_string']:
                         if hasattr(config, attr):
                             url = getattr(config, attr)
                             if url:
                                 print(f"📁 Using database URL from {config_file}")
                                 return url
+                    
+                    # Look for functions that return database URL
+                    for func_name in ['get_database_url', 'get_db_url', 'database_url', 'db_url']:
+                        if hasattr(config, func_name):
+                            func = getattr(config, func_name)
+                            if callable(func):
+                                try:
+                                    url = func()
+                                    if url:
+                                        print(f"📁 Using database URL from {config_file}.{func_name}()")
+                                        return url
+                                except Exception as e:
+                                    print(f"⚠️ Error calling {func_name}(): {e}")
+                                    continue
                 else:
                     # Try to parse .env file manually
                     with open(config_file, 'r') as f:
@@ -594,7 +730,7 @@ def build_database_url(
 
 
 def validate_database_url(db_url: str) -> bool:
-    """Validate that the database URL is properly formatted.
+    """Validate that the database URL is properly formatted and required drivers are available.
     
     Args:
         db_url: Database connection URL to validate.
@@ -603,13 +739,66 @@ def validate_database_url(db_url: str) -> bool:
         True if URL is valid, False otherwise.
     """
     try:
+        # Parse the URL to check format and extract database type
+        from urllib.parse import urlparse
+        parsed = urlparse(db_url)
+        
+        # Check if URL has required components
+        if not parsed.scheme:
+            print(f"❌ Invalid database URL format: {db_url}")
+            return False
+        
+        # Check for required database drivers based on scheme
+        scheme = parsed.scheme.lower()
+        
+        # For SQLite, netloc can be empty (just path)
+        if scheme != 'sqlite' and not parsed.netloc:
+            print(f"❌ Invalid database URL format: {db_url}")
+            return False
+        
+        if scheme.startswith('mysql'):
+            try:
+                import pymysql
+            except ImportError:
+                print(f"❌ MySQL driver not found. Install with: pip install pymysql")
+                print(f"   Or use: pip install mysqlclient")
+                return False
+                
+        elif scheme.startswith('postgresql'):
+            try:
+                import psycopg2
+            except ImportError:
+                print(f"❌ PostgreSQL driver not found. Install with: pip install psycopg2-binary")
+                return False
+                
+        elif scheme.startswith('mssql') or scheme.startswith('sqlserver'):
+            try:
+                import pyodbc
+            except ImportError:
+                print(f"❌ SQL Server driver not found. Install with: pip install pyodbc")
+                return False
+                
+        elif scheme.startswith('oracle'):
+            try:
+                import cx_Oracle
+            except ImportError:
+                print(f"❌ Oracle driver not found. Install with: pip install cx-Oracle")
+                return False
+        
+        # For SQLite, no additional driver check needed
+        elif scheme == 'sqlite':
+            pass
+            
+        else:
+            print(f"❌ Unsupported database type: {scheme}")
+            return False
+        
+        # Try to create engine to validate URL format (without connecting)
         from sqlalchemy import create_engine
-        # Try to create engine to validate URL
         engine = create_engine(db_url, future=True)
-        # Test connection
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        
         return True
+        
     except Exception as e:
         print(f"❌ Invalid database URL: {e}")
         return False
@@ -676,13 +865,28 @@ def load_models_metadata(models_file: str) -> MetaData:
         module_name = os.path.splitext(os.path.basename(models_file))[0]
         module = __import__(module_name)
         
-        # Look for metadata attribute
+        # Look for metadata attribute in order of preference
         if hasattr(module, 'metadata'):
             return module.metadata
         elif hasattr(module, 'MetaData'):
             return module.MetaData
+        elif hasattr(module, 'Base') and hasattr(module.Base, 'metadata'):
+            return module.Base.metadata
         else:
-            raise ImportError(f"No 'metadata' or 'MetaData' found in {models_file}")
+            raise ImportError(
+                f"No 'metadata', 'MetaData', or 'Base.metadata' found in {models_file}\n"
+                f"💡 Your models.py file must include a SQLAlchemy metadata object.\n"
+                f"   Example with direct metadata:\n"
+                f"   from sqlalchemy import MetaData\n"
+                f"   metadata = MetaData()\n"
+                f"   \n"
+                f"   Example with declarative base:\n"
+                f"   from sqlalchemy.ext.declarative import declarative_base\n"
+                f"   Base = declarative_base()\n"
+                f"   # Base.metadata will be automatically detected\n"
+                f"   \n"
+                f"   See examples/models_example.py for a complete example."
+            )
             
     except Exception as e:
         raise ImportError(f"Failed to load models from {models_file}: {e}")
@@ -701,16 +905,23 @@ def init_db_command(
     database: Optional[str] = typer.Option(None, "--database", help="Database name"),
     db_type: Optional[str] = typer.Option("sqlite", "--type", help="Database type: sqlite, postgresql, mysql"),
 ):
-    """Initialize the migration metadata table in the database.
+    """Initialize the migration metadata table in the database (Alembic-style).
     
     This command creates the migration_log table required for tracking applied
     migrations. The table stores migration version, description, timestamp, and
     payload information for rollback purposes.
     
-    Database connection options:
-    1. Use --db for complete URL: --db "postgresql://user:pass@localhost/db"
-    2. Use individual components: --host localhost --user myuser --database mydb --type postgresql
-    3. Auto-discovery from environment/config files
+    This follows Alembic's pattern where command line arguments override everything,
+    then environment variables, then saved configuration, then discovery.
+    
+    SECURITY: Passwords and sensitive data are NOT stored in config files.
+    Use environment variables for credentials in production.
+    
+    Database connection options (Alembic-style priority):
+    1. Command line arguments (--db, --host, --user, etc.) - highest priority
+    2. Environment variables (DBPORTER_DATABASE_URL or DATABASE_URL)
+    3. Saved configuration (non-sensitive data only)
+    4. Auto-discovery - lowest priority
     
     Args:
         db: Complete database connection URL (takes precedence).
@@ -724,8 +935,8 @@ def init_db_command(
     Raises:
         Exception: If database connection fails or table creation fails.
         
-    Example:
-        # Using complete URL
+    Examples:
+        # Using complete URL (like Alembic's env.py override)
         $ python main.py init-db --db "postgresql://user:pass@localhost/mydb"
         
         # Using individual components (more secure)
@@ -734,11 +945,15 @@ def init_db_command(
         # SQLite (default)
         $ python main.py init-db --database myapp.db
         
-        # Auto-discovery
+        # Using environment variables (most secure - like Alembic's DATABASE_URL)
+        $ export DBPORTER_DATABASE_URL="postgresql://user:pass@localhost/mydb"
+        $ python main.py init-db
+        
+        # Auto-discovery (last resort)
         $ python main.py init-db
     """
     try:
-        # Get database configuration
+        # Get database configuration        
         db_url, config = get_database_config(
             db=db, host=host, port=port, user=user,
             password=password, database=database, db_type=db_type
@@ -747,13 +962,18 @@ def init_db_command(
         if not validate_database_url(db_url):
             raise ValueError(f"Invalid database URL: {db_url}")
         
-        # Save configuration for future use
+        # Components are already extracted in get_database_config for discovery
+        # Just ensure db_url is preserved in config
+        if db_url:
+            config["db_url"] = db_url
+        
+        # Save configuration for future use (excluding sensitive data)
         save_database_config(
             db_url=config.get("db_url"),
             host=config.get("host"),
             port=config.get("port"),
             user=config.get("user"),
-            password=config.get("password"),
+            password=None,  # Never save passwords for security
             database=config.get("database"),
             db_type=config.get("db_type", "sqlite")
         )
@@ -766,6 +986,49 @@ def init_db_command(
     init_metadata(engine)
     print("✅ Migration metadata initialized.")
     print("💾 Database configuration saved - future commands will use these settings automatically!")
+
+
+@app.command("setup-secure-config")
+def setup_secure_config():
+    """Set up secure database configuration using environment variables.
+    
+    This command helps you configure dbPorter securely without storing
+    sensitive data in configuration files.
+    
+    It will guide you through setting up environment variables for your
+    database connection, which is the most secure approach.
+    """
+    print("🔐 Setting up secure database configuration...")
+    print()
+    print("This will help you configure dbPorter without storing sensitive data in files.")
+    print()
+    
+    # Check current environment
+    env_url = os.getenv('DBPORTER_DATABASE_URL') or os.getenv('DATABASE_URL')
+    if env_url:
+        print("✅ Found existing environment variable:")
+        print(f"   DBPORTER_DATABASE_URL or DATABASE_URL is set")
+        print("   This is the most secure configuration method!")
+        return
+    
+    print("📝 To set up secure configuration, add one of these to your environment:")
+    print()
+    print("Option 1: Add to your shell profile (~/.bashrc, ~/.zshrc, etc.):")
+    print("   export DBPORTER_DATABASE_URL='postgresql://user:password@localhost:5432/database'")
+    print()
+    print("Option 2: Create a .env file in your project root:")
+    print("   DBPORTER_DATABASE_URL=postgresql://user:password@localhost:5432/database")
+    print()
+    print("Option 3: Use programmatic configuration in your code:")
+    print("   from dbPorter import set_database_url")
+    print("   set_database_url('postgresql://user:password@localhost:5432/database')")
+    print()
+    print("🔒 Security benefits:")
+    print("   - No passwords in version control")
+    print("   - No sensitive data in config files")
+    print("   - Easy to manage different environments")
+    print()
+    print("💡 After setting up, run 'dbporter init-db' to initialize your database.")
 
 
 # ---------------------------
@@ -1381,12 +1644,19 @@ def autogenerate(
 ):
     """Auto-generate migration by comparing database schema with models metadata.
     
-    This command analyzes the current database schema and compares it against
-    the target schema defined in your models file to automatically generate a migration
-    file containing the necessary changes.
+    This command can work in two modes:
+    
+    1. WITH MODELS: Compares current database schema against your SQLAlchemy models
+       to generate migrations for the differences.
+       
+    2. DATABASE-ONLY: Shows current database schema (no migration generation)
+       Use this when you don't have SQLAlchemy models yet.
     
     The command auto-discovers models files with common names like:
     models.py, schema.py, database.py, db_models.py, tables.py
+    
+    If no models file is found or models can't be loaded, it falls back to
+    database-only mode and shows helpful guidance.
     
     The command detects and generates operations for:
     - Table additions and removals
@@ -1412,9 +1682,23 @@ def autogenerate(
         $ python main.py autogenerate --models-file "my_schema.py"
         $ python main.py autogenerate --db "sqlite:///mydb.db" -m "Update schema"
     """
-    # Discover and load models file
-    models_path = discover_models_file(models_file)
-    print(f"📁 Using models file: {models_path}")
+    # Try to discover and load models file (optional)
+    models_path = None
+    target_metadata = None
+    
+    try:
+        models_path = discover_models_file(models_file)
+        print(f"📁 Using models file: {models_path}")
+        target_metadata = load_models_metadata(models_path)
+        print("✅ Successfully loaded models metadata")
+    except FileNotFoundError:
+        print("💡 No models file found, using database-only mode")
+        print("   (This mode will only show current database schema, not generate migrations)")
+    except ImportError as e:
+        print(f"⚠️  Could not load models: {e}")
+        print("💡 Continuing with database-only mode")
+        models_path = None
+        target_metadata = None
     
     try:
         # Get database configuration (uses saved config if no args provided)
@@ -1432,11 +1716,21 @@ def autogenerate(
         print("💡 Run 'python main.py init-db' first to configure database connection")
         raise
     inspector = inspect(engine)
-    target_metadata: MetaData = load_models_metadata(models_path)
     diffs = []
 
     existing_tables = inspector.get_table_names()
-    target_tables = list(target_metadata.tables.keys())
+    
+    if target_metadata:
+        target_tables = list(target_metadata.tables.keys())
+    else:
+        # Database-only mode: just show current schema
+        target_tables = []
+        print("📊 Database-only mode: Showing current database schema")
+        print(f"   Found {len(existing_tables)} tables: {', '.join(existing_tables)}")
+        print("💡 To generate migrations, create a models.py file with SQLAlchemy models")
+        print("   See examples/models_example.py for a complete example")
+        return
+    
     INTERNAL_TABLES = _INTERNAL_TABLES
 
     # Tables
